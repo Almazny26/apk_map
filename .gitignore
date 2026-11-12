@@ -9,3 +9,5 @@ android/.gradle/
 android/build/
 android/app/build/
 android/local.properties
+# ключ подписи APK хранится в секрете GitHub KEYSTORE_B64, в репозиторий не кладётся
+android/netmap.keystore
