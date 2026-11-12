@@ -6,6 +6,7 @@ import android.app.Activity;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.view.WindowManager;
 import android.webkit.GeolocationPermissions;
@@ -125,7 +126,7 @@ public class MainActivity extends Activity {
 
     // ------------------------------------------------------------------ мост для клиента
 
-    private class Bridge {
+    public class Bridge {
         @JavascriptInterface
         public String load(String key) {
             File f = dataFile(key);
@@ -172,7 +173,9 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public int versionCode() {
             try {
-                return (int) getPackageManager().getPackageInfo(getPackageName(), 0).getLongVersionCode();
+                android.content.pm.PackageInfo info = getPackageManager().getPackageInfo(getPackageName(), 0);
+                // getLongVersionCode появился в Android 9; на Android 8 берём старое поле
+                return Build.VERSION.SDK_INT >= 28 ? (int) info.getLongVersionCode() : info.versionCode;
             } catch (Exception e) {
                 return 0;
             }

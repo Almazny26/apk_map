@@ -20,10 +20,13 @@ if not exist ".git" (
   git remote add origin https://github.com/Almazny26/apk_map.git
   git fetch origin main || goto err
   git reset -q --mixed origin/main || goto err
+  rem файл сборки APK в .github Claude положить в папку не может - его восстанавливает сам git
+  git checkout -q -- .github 2>nul
   git branch -q --set-upstream-to=origin/main main
   echo Готово: папка связана с репозиторием Almazny26/apk_map.
 ) else (
   echo Получаю обновления из GitHub...
+  git checkout -q -- .github 2>nul
   git pull --ff-only origin main || goto err
 )
 echo.
