@@ -27,6 +27,20 @@
   };
   NM.on('toast', U.toast);
 
+  /** Окно подтверждения в стиле приложения. Возвращает Promise<boolean>. */
+  var dialogDone = null;
+  U.confirm = function (text, okLabel, danger) {
+    return new Promise(function (resolve) {
+      if (dialogDone) dialogDone(false);
+      $('dialogtext').textContent = text;
+      var ok = $('dialogok');
+      ok.textContent = okLabel || 'Да';
+      ok.className = 'btn ' + (danger ? 'dangerfill' : 'primary');
+      $('dialog').hidden = false;
+      dialogDone = function (value) { dialogDone = null; $('dialog').hidden = true; resolve(value); };
+    });
+  };
+
   function isWide() { return window.innerWidth >= 820; }
 
   U.mapPadding = function () {
@@ -230,9 +244,13 @@
     var d = o ? o.data : { name: '', type: (D.settings.link_types[0] || {}).id, status: (D.settings.statuses[0] || {}).id, note: '', a: arg.a, b: arg.b };
     var a = D.view.get(d.a), b = D.view.get(d.b);
     if (!a || !b) return null;
-    var html = '<form data-form="link" data-id="' + esc(arg.id || '') + '" data-a="' + esc(d.a) + '" data-b="' + esc(d.b) + '">' +
+    var path = o ? (o.data.path || []) : (arg.path || []);
+    var pts = [[a.data.lat, a.data.lng]].concat(path, [[b.data.lat, b.data.lng]]), len = 0;
+    for (var i = 1; i < pts.length; i++) len += NM.distance(pts[i - 1], pts[i]);
+    var html = '<form data-form="link" data-id="' + esc(arg.id || '') + '" data-a="' + esc(d.a) + '" data-b="' + esc(d.b) +
+      '" data-path="' + esc(JSON.stringify(path)) + '">' +
       '<p class="pair">' + esc(a.data.name) + ' — ' + esc(b.data.name) +
-      ' <span class="muted">(' + NM.fmtDist(NM.distance([a.data.lat, a.data.lng], [b.data.lat, b.data.lng])) + ' по прямой)</span></p>' +
+      ' <span class="muted">(' + NM.fmtDist(len) + (path.length ? ', точек изгиба: ' + path.length : ' по прямой') + ')</span></p>' +
       '<div class="two"><label>Вид линии<select id="fType">' + options('link_types', d.type) + '</select></label>' +
       '<label>Состояние<select id="fStatus">' + options('statuses', d.status) + '</select></label></div>' +
       '<label>Название (необязательно)<input id="fName" maxlength="200" value="' + esc(d.name) + '" autocomplete="off"></label>' +
@@ -280,7 +298,7 @@
       hist.pop(); render();
     } else {
       id = NM.uuid();
-      patch.a = form.dataset.a; patch.b = form.dataset.b; patch.path = [];
+      patch.a = form.dataset.a; patch.b = form.dataset.b; patch.path = JSON.parse(form.dataset.path || '[]');
       D.edit('link', id, 'put', patch);
       hist = [];
       U.open(id);
@@ -719,17 +737,25 @@
 
   // ------------------------------------------------------------------ режимы работы с картой
 
-  function setMode(m, text, buttons) {
+  function modeButtons(buttons) {
+    $('modebtns').innerHTML = buttons.map(function (b) {
+      return '<button class="btn ' + (b.cls || '') + '" data-act="' + b.act + '"' + (b.off ? ' disabled' : '') + '>' + b.label + '</button>';
+    }).join('');
+  }
+
+  function modeText(title, hint) {
+    $('modetext').innerHTML = (title ? '<b>' + esc(title) + '</b>' : '') + (hint ? '<span>' + esc(hint) + '</span>' : '');
+  }
+
+  function setMode(m, title, hint, buttons) {
     mode = m;
     $('sheet').hidden = true;
     document.body.classList.remove('sheet-open');
     document.body.classList.add('mode');
     $('fab').hidden = true; closeFab();
-    $('cross').hidden = m.type !== 'place';
-    $('modetext').textContent = text;
-    $('modebtns').innerHTML = buttons.map(function (b) {
-      return '<button class="btn ' + (b.cls || '') + '" data-act="' + b.act + '">' + b.label + '</button>';
-    }).join('');
+    $('cross').hidden = !(m.type === 'place' || m.type === 'draw');
+    modeText(title, hint);
+    modeButtons(buttons);
     $('modebar').hidden = false;
     M.map.invalidateSize({ pan: false });
   }
@@ -738,48 +764,111 @@
     mode = null;
     $('modebar').hidden = true; $('cross').hidden = true;
     document.body.classList.remove('mode');
+    M.map.off('move', drawMove);
     M.draft(null);
+    M.stopEdit();
+    M.select(null);
     updateChrome();
   }
 
   function cancelMode(silent) {
     endMode();
-    if (!silent && hist.length) render();
+    if (!silent && hist.length) { render(); var cur = hist[hist.length - 1]; if (cur.arg && cur.arg.id) M.select(cur.arg.id); }
   }
 
   function startPlace(purpose, id) {
     var o = id ? D.view.get(id) : null;
     setMode({ type: 'place', purpose: purpose, id: id },
-      purpose === 'move' ? 'Подвиньте карту так, чтобы перекрестие встало на новое место узла «' + o.data.name + '»'
-        : 'Подвиньте карту так, чтобы перекрестие встало на место узла',
+      purpose === 'move' ? 'Новое место узла «' + o.data.name + '»' : 'Новый узел',
+      'Подвиньте карту так, чтобы перекрестие встало на нужное место.',
       [{ act: 'mode-cancel', label: 'Отмена' }, { act: 'mode-me', label: 'Моё место' }, { act: 'mode-ok', label: 'Здесь', cls: 'primary' }]);
     if (o) M.map.setView([o.data.lat, o.data.lng], Math.max(M.map.getZoom(), 16));
   }
 
-  function startPick(a) {
-    var first = a ? D.view.get(a) : null;
-    setMode({ type: 'pick', a: a || null },
-      first ? 'Нажмите на узел, с которым нужно соединить «' + first.data.name + '»' : 'Нажмите на первый узел линии',
+  function startPick() {
+    setMode({ type: 'pick' }, 'Новая линия', 'Нажмите на узел, от которого пойдёт линия.',
       [{ act: 'mode-cancel', label: 'Отмена' }]);
-    M.select(a || null);
+    M.select(null);
   }
+
+  // ---- ведение линии по точкам: перекрестие в центре, «Точка» ставит изгиб, на конечном узле — «Завершить»
+
+  function startDraw(a) {
+    if (!D.view.get(a)) return;
+    setMode({ type: 'draw', a: a, pts: [], snap: null, sig: '' }, '', '', []);
+    M.map.on('move', drawMove);
+    updateDraw();
+  }
+
+  function drawMove() { if (mode && mode.type === 'draw') updateDraw(); }
+
+  function updateDraw() {
+    var first = D.view.get(mode.a);
+    if (!first) { cancelMode(true); U.toast('Начальный узел удалил другой пользователь'); return; }
+    var c = M.center();
+    var near = M.nodeNear(L.latLng(c), 30, mode.a), end = c;
+    if (near) { var n = D.view.get(near); end = [n.data.lat, n.data.lng]; }
+    if (near !== mode.snap) { mode.snap = near; M.select(near); }
+    var pts = [[first.data.lat, first.data.lng]].concat(mode.pts, [end]), len = 0;
+    for (var i = 1; i < pts.length; i++) len += NM.distance(pts[i - 1], pts[i]);
+    M.draft(pts, mode.pts);
+    modeText('От «' + first.data.name + '» · ' + NM.fmtDist(len) + (mode.pts.length ? ' · точек: ' + mode.pts.length : ''),
+      near ? 'Перекрестие на узле «' + D.view.get(near).data.name + '». Нажмите «Завершить».'
+        : 'Наводите перекрестие на повороты и ставьте точки. На конечном узле линия завершится.');
+    // кнопки пересоздаём только при смене состояния, иначе нажатие во время движения карты теряется
+    var sig = (near ? 'end' : 'pt') + (mode.pts.length ? 1 : 0);
+    if (sig !== mode.sig) {
+      mode.sig = sig;
+      modeButtons([{ act: 'mode-cancel', label: 'Отмена' }, { act: 'draw-undo', label: 'Назад', off: !mode.pts.length },
+        near ? { act: 'draw-add', label: 'Завершить', cls: 'primary' } : { act: 'draw-add', label: 'Точка', cls: 'primary' }]);
+    }
+  }
+
+  function drawAddPoint(p) {
+    var first = D.view.get(mode.a);
+    var prev = mode.pts.length ? mode.pts[mode.pts.length - 1] : [first.data.lat, first.data.lng];
+    if (NM.distance(prev, p) < 0.5) return;   // повторное нажатие в ту же точку
+    if (mode.pts.length >= 300) { U.toast('В трассе не может быть больше 300 точек'); return; }
+    mode.pts.push([+p[0].toFixed(7), +p[1].toFixed(7)]);
+    updateDraw();
+  }
+
+  function finishDraw(b) {
+    var a = mode.a, path = mode.pts.slice();
+    var exists = D.links().some(function (l) {
+      return (l.data.a === a && l.data.b === b) || (l.data.a === b && l.data.b === a);
+    });
+    endMode();
+    hist = [];
+    U.show('linkForm', { a: a, b: b, path: path });
+    if (exists) U.toast('Между этими узлами уже есть линия. Можно добавить ещё одну, если это другая линия.', 5000);
+  }
+
+  // ---- правка трассы существующей линии
 
   function startPath(id) {
-    var o = D.view.get(id);
-    setMode({ type: 'path', id: id, path: (o.data.path || []).map(function (p) { return p.slice(); }) },
-      'Нажмите на карту рядом с линией — появится точка изгиба. Нажмите на точку, чтобы убрать её.',
-      [{ act: 'mode-cancel', label: 'Отмена' }, { act: 'path-reset', label: 'Спрямить' }, { act: 'mode-ok', label: 'Готово', cls: 'primary' }]);
-    M.select(null);
-    drawPath();
+    var o = D.view.get(id), a = D.view.get(o.data.a), b = D.view.get(o.data.b);
+    setMode({ type: 'path', id: id, path: (o.data.path || []).map(function (p) { return p.slice(); }), undo: [], sig: '' }, '', '', []);
+    M.editPath([a.data.lat, a.data.lng], [b.data.lat, b.data.lng], mode.path, function (path) {
+      mode.undo.push(mode.path); mode.path = path; updatePathBar();
+    });
+    updatePathBar();
+    var pts = D.linkPoints(o);
+    if (pts) M.map.fitBounds(L.latLngBounds(pts), { paddingTopLeft: [40, 90], paddingBottomRight: [40, 190], maxZoom: 17 });
   }
 
-  function pathPoints() {
+  function updatePathBar() {
     var o = D.view.get(mode.id), a = D.view.get(o.data.a), b = D.view.get(o.data.b);
-    return [[a.data.lat, a.data.lng]].concat(mode.path, [[b.data.lat, b.data.lng]]);
-  }
-
-  function drawPath() {
-    M.draft(pathPoints(), mode.path, function (i) { mode.path.splice(i, 1); drawPath(); });
+    var pts = [[a.data.lat, a.data.lng]].concat(mode.path, [[b.data.lat, b.data.lng]]), len = 0;
+    for (var i = 1; i < pts.length; i++) len += NM.distance(pts[i - 1], pts[i]);
+    modeText('Трасса · ' + NM.fmtDist(len) + ' · точек: ' + mode.path.length,
+      'Тяните точки по улицам. Бледная точка посередине отрезка добавляет изгиб, нажатие на точку убирает её.');
+    var sig = (mode.undo.length ? 1 : 0) + '' + (mode.path.length ? 1 : 0);
+    if (sig !== mode.sig) {
+      mode.sig = sig;
+      modeButtons([{ act: 'mode-cancel', label: 'Отмена' }, { act: 'path-undo', label: 'Назад', off: !mode.undo.length },
+        { act: 'path-reset', label: 'Спрямить', off: !mode.path.length }, { act: 'mode-ok', label: 'Готово', cls: 'primary' }]);
+    }
   }
 
   function modeOk() {
@@ -795,9 +884,9 @@
         U.show('nodeForm', { lat: +c[0].toFixed(7), lng: +c[1].toFixed(7) });
       }
     } else if (mode.type === 'path') {
-      var id = mode.id, path = mode.path;
+      var id = mode.id, path = mode.path, cur = D.view.get(id);
       endMode();
-      D.edit('link', id, 'put', { path: path });
+      if (cur && JSON.stringify(cur.data.path || []) !== JSON.stringify(path)) D.edit('link', id, 'put', { path: path });
       hist = []; U.open(id);
     }
   }
@@ -806,17 +895,9 @@
     var o = D.view.get(id);
     if (!o) return;
     if (mode) {
-      if (mode.type !== 'pick' || o.kind !== 'node') return;
-      if (!mode.a) { startPick(id); return; }
-      if (mode.a === id) return;
-      var a = mode.a;
-      var exists = D.links().some(function (l) {
-        return (l.data.a === a && l.data.b === id) || (l.data.a === id && l.data.b === a);
-      });
-      endMode();
-      hist = [];
-      U.show('linkForm', { a: a, b: id });
-      if (exists) U.toast('Между этими узлами уже есть линия. Можно добавить ещё одну, если это другая линия.', 5000);
+      if (o.kind !== 'node') return;
+      if (mode.type === 'pick') startDraw(id);
+      else if (mode.type === 'draw' && id !== mode.a) finishDraw(id);
       return;
     }
     U.open(id);
@@ -825,11 +906,8 @@
   NM.on('maptap', function (latlng) {
     closeFab();
     if (mode) {
-      if (mode.type === 'path') {
-        var pts = pathPoints();
-        mode.path.splice(M.nearestSegment(pts, latlng), 0, [+latlng.lat.toFixed(7), +latlng.lng.toFixed(7)]);
-        drawPath();
-      }
+      if (mode.type === 'path') M.editInsert(latlng);
+      else if (mode.type === 'draw') drawAddPoint([latlng.lat, latlng.lng]);
       return;
     }
     if (currentIs('node') || currentIs('link')) closeSheet();
@@ -890,7 +968,7 @@
     'add-link': function () {
       closeFab();
       if (D.nodes().length < 2) { U.toast('Чтобы провести линию, на карте должно быть хотя бы два узла'); return; }
-      hist = []; startPick(null);
+      hist = []; startPick();
     },
     open: function (d) { U.open(d.id, true); },
     tab: function (d) { hist[hist.length - 1].arg.tab = d.tab; render(); },
@@ -901,7 +979,7 @@
     'edit-node': function (d) { U.show('nodeForm', { id: d.id }); },
     'edit-link': function (d) { U.show('linkForm', { id: d.id }); },
     'move-node': function (d) { startPlace('move', d.id); },
-    'link-from': function (d) { startPick(d.id); },
+    'link-from': function (d) { startDraw(d.id); },
     'edit-path': function (d) { startPath(d.id); },
     history: function (d) { U.show('journal', { obj: d.id }); },
     'delete': function (d) {
@@ -911,10 +989,12 @@
       var text = o.kind === 'node'
         ? 'Удалить узел «' + o.data.name + '»' + (n ? ' и линии, которые к нему подведены (' + n + ')' : '') + '?'
         : 'Удалить линию «' + D.linkTitle(o) + '»?';
-      if (!confirm(text + ' Удаление увидят все пользователи.')) return;
-      D.edit(o.kind, o.id, 'delete');
-      closeSheet();
-      U.toast(o.kind === 'node' ? 'Узел удалён' : 'Линия удалена');
+      U.confirm(text + ' Удаление увидят все пользователи.', 'Удалить', true).then(function (yes) {
+        if (!yes || !D.view.has(o.id)) return;
+        D.edit(o.kind, o.id, 'delete');
+        closeSheet();
+        U.toast(o.kind === 'node' ? 'Узел удалён' : 'Линия удалена');
+      });
     },
     route: function (d) {
       var o = D.view.get(d.id);
@@ -927,14 +1007,22 @@
     'mode-me': function () {
       if (M.myPos) M.map.setView(M.myPos, Math.max(M.map.getZoom(), 17)); else M.locate();
     },
-    'path-reset': function () { mode.path = []; drawPath(); },
+    'path-reset': function () { mode.undo.push(mode.path); mode.path = []; M.editSet([]); updatePathBar(); },
+    'path-undo': function () { if (mode.undo.length) { mode.path = mode.undo.pop(); M.editSet(mode.path); updatePathBar(); } },
+    'draw-undo': function () { mode.pts.pop(); updateDraw(); },
+    'draw-add': function () { if (mode.snap) finishDraw(mode.snap); else drawAddPoint(M.center()); },
+    'dialog-ok': function () { if (dialogDone) dialogDone(true); },
+    'dialog-cancel': function () { if (dialogDone) dialogDone(false); },
     'sync-now': function () { D.connect(); U.toast('Обновляю…', 1500); },
     'drop-queue': function () {
-      if (confirm('Отменить неотправленные правки (' + D.queue.length + ')? Они будут потеряны.')) D.dropQueue();
+      U.confirm('Отменить неотправленные правки (' + D.queue.length + ')? Они будут потеряны.', 'Отменить правки', true)
+        .then(function (yes) { if (yes) D.dropQueue(); });
     },
     logout: function () {
-      if (D.queue.length && !confirm('Есть неотправленные правки (' + D.queue.length + '). Они отправятся после следующего входа. Выйти?')) return;
-      closeSheet(); D.logout();
+      var go = function () { closeSheet(); D.logout(); };
+      if (!D.queue.length) { go(); return; }
+      U.confirm('Есть неотправленные правки (' + D.queue.length + '). Они отправятся после следующего входа. Выйти?', 'Выйти')
+        .then(function (yes) { if (yes) go(); });
     },
     update: function () { NM.native.openExternal(NM.session.server + apkInfo.url); },
     user: function (d) { U.show('userForm', { user: JSON.parse(d.user) }); },
@@ -955,7 +1043,8 @@
     'offline-save': function (d) { startDownload(+d.z); },
     'offline-cancel': function () { if (dl) dl.stop = true; },
     'offline-clear': function () {
-      if (confirm('Удалить сохранённую на телефоне карту? Узлы и линии не пострадают.')) { NM.native.clearTileCache(); render(); }
+      U.confirm('Удалить сохранённую на телефоне карту? Узлы и линии не пострадают.', 'Удалить', true)
+        .then(function (yes) { if (yes) { NM.native.clearTileCache(); render(); } });
     }
   };
 
@@ -1001,8 +1090,37 @@
     if (currentIs('list')) { hist[hist.length - 1].arg.q = q; render(); } else { hist = []; U.show('list', { q: q }); $('search').value = q; }
   }, 200));
 
+  $('search').addEventListener('keydown', function (e) { if (e.key === 'Enter') $('search').blur(); });
+
+  // панель на телефоне закрывается смахиванием заголовка вниз
+  (function () {
+    var head = $('sheethead'), sheet = $('sheet'), y0 = null, dy = 0;
+    head.addEventListener('touchstart', function (e) {
+      if (isWide() || e.target.closest('button')) return;
+      y0 = e.touches[0].clientY; dy = 0; sheet.style.transition = 'none';
+    }, { passive: true });
+    head.addEventListener('touchmove', function (e) {
+      if (y0 === null) return;
+      dy = Math.max(0, e.touches[0].clientY - y0);
+      sheet.style.transform = 'translateY(' + dy + 'px)';
+    }, { passive: true });
+    var end = function () {
+      if (y0 === null) return;
+      y0 = null; sheet.style.transition = ''; sheet.style.transform = '';
+      if (dy > 90) closeSheet();
+    };
+    head.addEventListener('touchend', end);
+    head.addEventListener('touchcancel', end);
+  })();
+
+  function updateHint() {
+    $('hint').hidden = !(NM.session.token && NM.canEdit() && !mode && !hist.length && D.connected && D.view.size === 0);
+  }
+  NM.on('objects', updateHint); NM.on('status', updateHint); NM.on('auth', updateHint);
+
   // кнопка «назад» телефона: закрывает то, что открыто поверх карты
   window.__nmBack = function () {
+    if (dialogDone) { dialogDone(false); return true; }
     if (!$('login').hidden) return false;
     if (!$('fabmenu').hidden) { closeFab(); return true; }
     if (!$('drawer').hidden) { closeDrawer(); return true; }
@@ -1040,17 +1158,21 @@
     var err = $('lgError'), btn = $('lgBtn');
     var server = NM.servedByServer ? location.origin : NM.normalizeServer($('lgServer').value);
     if (!server) { err.textContent = 'Укажите адрес сервера, например http://192.168.1.10:8790'; err.hidden = false; return; }
-    if (server !== NM.session.server && D.queue.length &&
-        !confirm('На устройстве есть неотправленные правки для другого сервера (' + D.queue.length + '). При входе на новый сервер они будут потеряны. Продолжить?')) return;
-    btn.disabled = true; btn.textContent = 'Вход…'; err.hidden = true;
-    D.login(server, $('lgLogin').value, $('lgPass').value).then(function () {
-      btn.disabled = false; btn.textContent = 'Войти';
-    }, function (e) {
-      btn.disabled = false; btn.textContent = 'Войти';
-      err.textContent = e.code === 'network'
-        ? 'Сервер не отвечает. Проверьте адрес и подключение к интернету.' : e.message;
-      err.hidden = false;
-    });
+    var go = function () {
+      btn.disabled = true; btn.textContent = 'Вход…'; err.hidden = true;
+      D.login(server, $('lgLogin').value, $('lgPass').value).then(function () {
+        btn.disabled = false; btn.textContent = 'Войти';
+      }, function (e) {
+        btn.disabled = false; btn.textContent = 'Войти';
+        err.textContent = e.code === 'network'
+          ? 'Сервер не отвечает. Проверьте адрес и подключение к интернету.' : e.message;
+        err.hidden = false;
+      });
+    };
+    if (server !== NM.session.server && D.queue.length) {
+      U.confirm('На устройстве есть неотправленные правки для другого сервера (' + D.queue.length +
+        '). При входе на новый сервер они будут потеряны. Продолжить?', 'Продолжить', true).then(function (yes) { if (yes) go(); });
+    } else go();
   }
 
   function checkUpdate() {

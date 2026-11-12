@@ -13,7 +13,7 @@ var NM = {};
   'use strict';
 
   NM.native = window.NetMapNative || null;
-  NM.CLIENT_VERSION = '1.0.1';
+  NM.CLIENT_VERSION = '1.1';
 
   // ------------------------------------------------------------------ мелочи
 
@@ -306,7 +306,7 @@ var NM = {};
     D.flushing = true;
     var batch = D.queue.slice(0, 100);
     NM.api('POST', '/api/ops', { ops: batch }).then(function (res) {
-      D.flushing = false;
+      D.flushing = false; D.denied = false;
       var done = {}, rejected = [];
       (res.results || []).forEach(function (r) {
         done[r.op_id] = true;
@@ -326,7 +326,9 @@ var NM = {};
     }, function (err) {
       D.flushing = false;
       if (err.status === 403) {
-        NM.emit('toast', 'Сервер не принял правки: у вас доступ только на просмотр');
+        // говорим об этом один раз, а не при каждой повторной попытке
+        if (!D.denied) NM.emit('toast', 'Сервер не принял правки: у вас доступ только на просмотр');
+        D.denied = true;
       } else if (err.status === 0) {
         scheduleRetry();
       } else if (err.status !== 401) {

@@ -23,7 +23,7 @@
   var ShapeMarker = L.CircleMarker.extend({
     _updatePath: function () {
       var r = this._renderer, shape = this.options.shape;
-      if (!r._ctx || !shape || shape === 'circle') { r._updateCircle(this); return; }
+      if (!r._ctx) { r._updateCircle(this); return; }
       if (!r._drawing || this._empty()) return;
       var p = this._point, ctx = r._ctx, s = Math.max(Math.round(this._radius), 1);
       ctx.beginPath();
@@ -35,13 +35,23 @@
       } else if (shape === 'triangle') {
         ctx.moveTo(p.x, p.y - s * 1.25); ctx.lineTo(p.x + s * 1.2, p.y + s * 0.9);
         ctx.lineTo(p.x - s * 1.2, p.y + s * 0.9); ctx.closePath();
-      } else {
+      } else if (shape === 'hex') {
         for (var i = 0; i < 6; i++) {
           var a = Math.PI / 3 * i;
           ctx[i ? 'lineTo' : 'moveTo'](p.x + s * 1.15 * Math.cos(a), p.y + s * 1.15 * Math.sin(a));
         }
         ctx.closePath();
+      } else {
+        ctx.arc(p.x, p.y, s, 0, Math.PI * 2, false);
       }
+      // белая кайма под контуром: значок читается и на схеме, и на спутниковом снимке
+      ctx.save();
+      ctx.lineJoin = 'round';
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = this.options.weight + 4;
+      ctx.globalAlpha = 0.95;
+      ctx.stroke();
+      ctx.restore();
       r._fillStroke(ctx, this);
     }
   });
@@ -55,7 +65,7 @@
     myPos: null
   };
 
-  var baseLayer = null, linkGroup, haloGroup, nodeGroup, labelGroup, selGroup, draftGroup, meGroup;
+  var baseLayer = null, linkGroup, haloGroup, caseGroup, nodeGroup, labelGroup, selGroup, draftGroup, meGroup;
   var watchId = null, follow = false;
 
   M.savePrefs = NM.debounce(function () { NM.kv.set('prefs', M.prefs); }, 800);
@@ -109,6 +119,7 @@
     L.control.scale({ imperial: false, position: 'bottomleft' }).addTo(map);
 
     haloGroup = L.layerGroup().addTo(map);
+    caseGroup = L.layerGroup().addTo(map);
     linkGroup = L.layerGroup().addTo(map);
     selGroup = L.layerGroup().addTo(map);
     nodeGroup = L.layerGroup().addTo(map);
@@ -175,6 +186,7 @@
     var old = M.linkLines.get(id);
     if (!old) return;
     linkGroup.removeLayer(old.line);
+    caseGroup.removeLayer(old.casing);
     if (old.halo) haloGroup.removeLayer(old.halo);
     M.linkLines.delete(id);
   }
@@ -192,9 +204,13 @@
       opacity: o.pending ? 0.7 : 0.95,
       dashArray: t && t.dash ? t.dash : null,
       lineCap: t && t.dash ? 'butt' : 'round',
+      lineJoin: 'round',
       bubblingMouseEvents: false
     });
     line.on('click', function () { NM.emit('tap', o.id); });
+    // белая подложка отделяет линию от рисунка карты
+    var casing = L.polyline(pts, { color: '#ffffff', weight: 7.5, opacity: 0.85, interactive: false, lineJoin: 'round' });
+    casing.addTo(caseGroup);
     line.addTo(linkGroup);
     var halo = null;
     if (!isFirstStatus(o.data.status)) {
@@ -202,12 +218,13 @@
       halo = L.polyline(pts, { color: statusColor(o.data.status), weight: 12, opacity: 0.45, interactive: false });
       halo.addTo(haloGroup);
     }
-    M.linkLines.set(o.id, { line: line, halo: halo });
+    M.linkLines.set(o.id, { line: line, halo: halo, casing: casing });
   }
 
   // Всё рисуется на одном холсте, и при нажатии Leaflet выбирает объект, нарисованный последним.
-  // Поэтому порядок такой: подсветка состояния, линии, узлы — узел всегда «сверху» своей линии.
+  // Поэтому порядок такой: подсветка состояния, белая подложка, линии, узлы — узел всегда «сверху».
   function restack() {
+    caseGroup.eachLayer(function (l) { l.bringToBack(); });
     haloGroup.eachLayer(function (l) { l.bringToBack(); });
     M.nodeMarkers.forEach(function (m) { m.bringToFront(); });
   }
@@ -237,7 +254,7 @@
 
   M.rebuild = function () {
     if (!M.map) return;
-    nodeGroup.clearLayers(); linkGroup.clearLayers(); haloGroup.clearLayers();
+    nodeGroup.clearLayers(); linkGroup.clearLayers(); haloGroup.clearLayers(); caseGroup.clearLayers();
     M.nodeMarkers.clear(); M.linkLines.clear();
     D.view.forEach(function (o) { if (o.kind === 'node') drawNode(o); });
     D.view.forEach(function (o) { if (o.kind === 'link') drawLink(o); });
@@ -304,21 +321,114 @@
 
   M.center = function () { var c = M.map.getCenter(); return [c.lat, c.lng]; };
 
-  // ------------------------------------------------------------------ черновик (новая линия, правка трассы)
+  // ------------------------------------------------------------------ черновик новой линии
 
-  /** Рисует временную линию и точки-ручки. onHandle(index) вызывается при нажатии на ручку. */
-  M.draft = function (points, handles, onHandle) {
+  /**
+   * Рисует линию, которую сейчас ведут: сплошная часть по поставленным точкам и пунктир
+   * от последней точки до перекрестия. dots — уже поставленные точки изгиба.
+   */
+  M.draft = function (points, dots) {
     draftGroup.clearLayers();
-    if (points && points.length > 1) {
-      L.polyline(points, { color: '#0b6bcb', weight: 4, dashArray: '6 8', interactive: false }).addTo(draftGroup);
+    if (!points || points.length < 2) return;
+    var fixed = points.slice(0, points.length - 1), tail = points.slice(points.length - 2);
+    if (fixed.length > 1) {
+      L.polyline(fixed, { color: '#ffffff', weight: 8, opacity: 0.9, interactive: false, lineJoin: 'round' }).addTo(draftGroup);
+      L.polyline(fixed, { color: '#0b6bcb', weight: 4, interactive: false, lineJoin: 'round' }).addTo(draftGroup);
     }
-    (handles || []).forEach(function (p, i) {
-      var h = L.circleMarker(p, {
-        radius: 9, color: '#0b6bcb', weight: 3, fillColor: '#ffffff', fillOpacity: 1, bubblingMouseEvents: false
-      });
-      h.on('click', function () { onHandle(i); });
-      h.addTo(draftGroup);
+    L.polyline(tail, { color: '#ffffff', weight: 7, opacity: 0.8, interactive: false }).addTo(draftGroup);
+    L.polyline(tail, { color: '#0b6bcb', weight: 3.5, dashArray: '7 9', interactive: false }).addTo(draftGroup);
+    (dots || []).forEach(function (p) {
+      L.circleMarker(p, { radius: 5, color: '#0b6bcb', weight: 2.5, fillColor: '#ffffff', fillOpacity: 1, interactive: false }).addTo(draftGroup);
     });
+  };
+
+  /** Ближайший к точке узел в пределах px экранных пикселей (кроме exceptId) или null. */
+  M.nodeNear = function (latlng, px, exceptId) {
+    var c = M.map.latLngToContainerPoint(latlng), best = null, bestD = px;
+    M.nodeMarkers.forEach(function (m, id) {
+      if (id === exceptId) return;
+      var d = c.distanceTo(M.map.latLngToContainerPoint(m.getLatLng()));
+      if (d <= bestD) { bestD = d; best = id; }
+    });
+    return best;
+  };
+
+  // ------------------------------------------------------------------ редактор трассы
+  // Точки изгиба — обычные перетаскиваемые маркеры (а не фигуры на холсте): их удобно тянуть пальцем.
+  // Между соседними точками стоит полупрозрачная «средняя» точка: потянули её — появился новый изгиб.
+
+  var ed = null;
+
+  function edPts() { return [ed.a].concat(ed.path, [ed.b]); }
+  function edCopy() { return ed.path.map(function (p) { return [+p[0].toFixed(7), +p[1].toFixed(7)]; }); }
+  function edIcon(cls) { return L.divIcon({ className: 'nm-h ' + cls, iconSize: [36, 36], iconAnchor: [18, 18] }); }
+  function mid(p, q) { return [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2]; }
+
+  function edSync(withMids) {
+    var pts = edPts();
+    ed.line.setLatLngs(pts); ed.casing.setLatLngs(pts);
+    if (withMids) ed.mm.forEach(function (m, i) { m.setLatLng(mid(pts[i], pts[i + 1])); });
+  }
+
+  function edChanged() {
+    // перестраиваем после того, как Leaflet закончит обработку перетаскивания
+    setTimeout(function () {
+      if (!ed) return;
+      ed.path = edCopy();
+      edBuild();
+      ed.onChange(edCopy());
+    }, 0);
+  }
+
+  function edBuild() {
+    ed.layer.clearLayers(); ed.mm = [];
+    var pts = edPts();
+    ed.casing = L.polyline(pts, { color: '#ffffff', weight: 9, opacity: 0.95, interactive: false, lineJoin: 'round' }).addTo(ed.layer);
+    ed.line = L.polyline(pts, { color: '#0b6bcb', weight: 4.5, interactive: false, lineJoin: 'round' }).addTo(ed.layer);
+    for (var k = 0; k < pts.length - 1; k++) (function (i) {
+      var m = L.marker(mid(pts[i], pts[i + 1]), { icon: edIcon('m'), draggable: true, autoPan: true, zIndexOffset: 500, keyboard: false });
+      m.on('dragstart', function () {
+        var ll = m.getLatLng();
+        ed.path.splice(i, 0, [ll.lat, ll.lng]);
+        ed.mm.forEach(function (x) { if (x !== m) x.setOpacity(0); });
+        var el = m.getElement(); if (el) { el.classList.remove('m'); el.classList.add('v'); }
+      });
+      m.on('drag', function () { var ll = m.getLatLng(); ed.path[i] = [ll.lat, ll.lng]; edSync(false); });
+      m.on('dragend', function () { ed.quietUntil = Date.now() + 400; edChanged(); });
+      m.addTo(ed.layer); ed.mm.push(m);
+    })(k);
+    ed.path.forEach(function (p, i) {
+      var m = L.marker(p, { icon: edIcon('v'), draggable: true, autoPan: true, zIndexOffset: 1000, keyboard: false });
+      m.on('drag', function () { var ll = m.getLatLng(); ed.path[i] = [ll.lat, ll.lng]; edSync(true); });
+      m.on('dragend', function () { ed.quietUntil = Date.now() + 400; edChanged(); });
+      m.on('click', function () {
+        // сразу после перетаскивания браузер может прислать «нажатие» по только что созданной точке
+        if (Date.now() < ed.quietUntil) return;
+        ed.path.splice(i, 1); edChanged();
+      });
+      m.addTo(ed.layer);
+    });
+  }
+
+  /** Включает правку трассы между точками a и b. onChange(path) вызывается после каждого изменения. */
+  M.editPath = function (a, b, path, onChange) {
+    M.stopEdit();
+    ed = { a: a, b: b, path: path.map(function (p) { return p.slice(); }), onChange: onChange, layer: L.layerGroup().addTo(M.map), mm: [], quietUntil: 0 };
+    edBuild();
+  };
+  M.editSet = function (path) {
+    if (!ed) return;
+    ed.path = path.map(function (p) { return p.slice(); });
+    edBuild();
+  };
+  /** Добавляет точку изгиба в ближайший к нажатию отрезок. */
+  M.editInsert = function (latlng) {
+    if (!ed) return;
+    ed.path.splice(M.nearestSegment(edPts(), latlng), 0, [latlng.lat, latlng.lng]);
+    edChanged();
+  };
+  M.stopEdit = function () {
+    if (ed) { M.map.removeLayer(ed.layer); ed = null; }
   };
 
   /** Индекс отрезка ломаной, ближайшего к точке (в экранных пикселях). */

@@ -55,6 +55,7 @@
 </div>
 
 <aside id="sheet" hidden>
+  <div id="grab" aria-hidden="true"></div>
   <div id="sheethead">
     <button class="ib flat" id="sheetback" data-act="back" aria-label="Назад" hidden>
       <svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg>
@@ -102,6 +103,18 @@
     <div class="ver" id="lgVer"></div>
   </form>
 </section>
+
+<div id="hint" hidden>Карта пока пустая. Нажмите <b>+</b>, чтобы поставить первый узел.</div>
+
+<div id="dialog" hidden>
+  <div id="dialogbox" role="alertdialog" aria-modal="true" aria-labelledby="dialogtext">
+    <p id="dialogtext"></p>
+    <div class="actions">
+      <button class="btn" data-act="dialog-cancel">Отмена</button>
+      <button class="btn primary" id="dialogok" data-act="dialog-ok">Да</button>
+    </div>
+  </div>
+</div>
 
 <div id="toast" hidden></div>
 
