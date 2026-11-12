@@ -1,0 +1,56 @@
+plugins {
+    id 'com.android.application'
+}
+
+// Номер версии передаёт сборка GitHub Actions: -Pvc=<номер сборки> -Pvn=1.0.<номер сборки>
+def vc = (project.findProperty('vc') ?: '1') as int
+def vn = (project.findProperty('vn') ?: '1.0.0-dev') as String
+
+android {
+    namespace 'ru.netmap.app'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'ru.netmap.app'
+        minSdk 26
+        // 34, а не 35: с 35 Android принудительно рисует приложение под системными панелями
+        targetSdk 34
+        versionCode vc
+        versionName vn
+    }
+
+    signingConfigs {
+        release {
+            // Ключ лежит в закрытом репозитории: приложение внутреннее, а одинаковая подпись
+            // нужна, чтобы новые версии ставились поверх старых без удаления.
+            storeFile file('../netmap.keystore')
+            storePassword 'netmap-internal'
+            keyAlias 'netmap'
+            keyPassword 'netmap-internal'
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.release
+        }
+    }
+
+    // Клиент один на всё: тот же каталог web/ раздаёт сервер и он же вшивается в APK
+    sourceSets {
+        main {
+            assets.srcDirs = ['../../web']
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    lint {
+        checkReleaseBuilds false
+        abortOnError false
+    }
+}

@@ -1,0 +1,11 @@
+# данные сервера конкретного ПК (база, настройки, журнал) — в репозиторий не попадают
+data/
+data-demo/
+__pycache__/
+*.pyc
+*.zip
+# сборка Android
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
