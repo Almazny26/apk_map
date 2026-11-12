@@ -6,8 +6,8 @@
 <meta name="theme-color" content="#17324D">
 <title>Карта сети</title>
 <link rel="icon" href="icon.svg">
-<link rel="stylesheet" href="vendor/leaflet/leaflet.css">
-<link rel="stylesheet" href="app.css">
+<link rel="stylesheet" href="vendor/maplibre/maplibre-gl.css?v=1.2">
+<link rel="stylesheet" href="app.css?v=1.2">
 </head>
 <body class="booting">
 
@@ -30,6 +30,9 @@
 </header>
 
 <div id="mapbtns">
+  <button class="ib" id="btnNorth" data-act="north" hidden aria-label="Повернуть карту севером вверх">
+    <svg viewBox="0 0 24 24" id="needle"><path class="north" d="M12 2.5 16.5 12h-9Z"/><path class="south" d="M12 21.5 7.5 12h9Z"/></svg>
+  </button>
   <button class="ib" data-act="layer" aria-label="Схема или спутник">
     <svg viewBox="0 0 24 24"><path d="M12 3 3 8l9 5 9-5-9-5ZM3 12l9 5 9-5M3 16l9 5 9-5"/></svg>
   </button>
@@ -118,9 +121,9 @@
 
 <div id="toast" hidden></div>
 
-<script src="vendor/leaflet/leaflet.js"></script>
-<script src="js/core.js"></script>
-<script src="js/mapview.js"></script>
-<script src="js/ui.js"></script>
+<script src="vendor/maplibre/maplibre-gl.js?v=1.2"></script>
+<script src="js/core.js?v=1.2"></script>
+<script src="js/mapview.js?v=1.2"></script>
+<script src="js/ui.js?v=1.2"></script>
 </body>
 </html>

@@ -29,16 +29,17 @@ button, input, select, textarea { font: inherit; color: inherit; }
 button { cursor: pointer; }
 
 #map { position: fixed; inset: 0; background: #e8ecef; z-index: 0; }
-.leaflet-container { font: inherit; }
-.leaflet-control-attribution { font-size: 10px; background: rgba(255, 255, 255, .75) !important; }
-.leaflet-bottom.leaflet-left { margin-bottom: var(--safe-b); }
+.maplibregl-map { font: inherit; }
+.maplibregl-canvas { outline: none; }
+.maplibregl-ctrl-bottom-left { margin-bottom: var(--safe-b); }
+.maplibregl-ctrl-attrib { font-size: 10px; }
+.maplibregl-ctrl-scale { border-color: #334155; color: #0f172a; background: rgba(255, 255, 255, .8); font-size: 10px; }
+.maplibregl-ctrl svg, .maplibregl-ctrl-attrib-button { stroke: none; }
 
-.nm-label {
-  background: rgba(255, 255, 255, .92); border: 0; border-radius: 4px; box-shadow: none;
-  padding: 1px 5px; font-size: 12px; font-weight: 600; color: var(--ink); white-space: nowrap;
-}
-.nm-label::before { display: none; }
-body.sat .nm-label { background: rgba(15, 23, 42, .78); color: #fff; }
+#needle { transition: transform .08s linear; }
+#needle path { stroke: none; }
+#needle .north { fill: #dc2626; }
+#needle .south { fill: #94a3b8; }
 
 svg { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 svg .fill { fill: currentColor; stroke: none; }
@@ -283,15 +284,17 @@ body.is-native .web-only { display: none !important; }
 
 /* ---------------------------------------------------------------- точки трассы (перетаскиваемые) */
 
-.nm-h { background: none; border: 0; touch-action: none; cursor: grab; }
+.nm-h { width: 40px; height: 40px; background: none; border: 0; touch-action: none; cursor: grab; }
 .nm-h::after {
   content: ""; position: absolute; left: 50%; top: 50%; border-radius: 50%; transform: translate(-50%, -50%);
   transition: width .12s, height .12s, opacity .12s;
 }
 .nm-h.v::after { width: 18px; height: 18px; background: #fff; border: 3.5px solid var(--primary); box-shadow: 0 1px 5px rgba(15, 23, 42, .45); }
 .nm-h.m::after { width: 12px; height: 12px; background: var(--primary); border: 2px solid #fff; opacity: .55; box-shadow: 0 1px 3px rgba(15, 23, 42, .3); }
-.nm-h.leaflet-drag-target { cursor: grabbing; }
-.nm-h.leaflet-drag-target::after { width: 24px; height: 24px; opacity: 1; }
+.nm-h.drag { cursor: grabbing; z-index: 5; }
+.nm-h.drag::after { width: 26px; height: 26px; opacity: 1; box-shadow: 0 3px 10px rgba(15, 23, 42, .5); }
+.nm-h.v { z-index: 3; }
+.nm-h.m { z-index: 2; }
 
 /* ---------------------------------------------------------------- окно подтверждения, подсказка */
 

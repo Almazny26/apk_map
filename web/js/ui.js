@@ -126,7 +126,7 @@
     $('sheet').className = out.tall ? 'tall' : '';
     document.body.classList.add('sheet-open');
     if (out.after) out.after(body);
-    M.map.invalidateSize({ pan: false });
+    M.resize();
   }
 
   function closeSheet() {
@@ -136,7 +136,7 @@
     document.body.classList.remove('sheet-open');
     M.select(null);
     if ($('search').value) $('search').value = '';
-    M.map.invalidateSize({ pan: false });
+    M.resize();
   }
 
   function back() {
@@ -757,14 +757,14 @@
     modeText(title, hint);
     modeButtons(buttons);
     $('modebar').hidden = false;
-    M.map.invalidateSize({ pan: false });
+    M.resize();
   }
 
   function endMode() {
     mode = null;
     $('modebar').hidden = true; $('cross').hidden = true;
     document.body.classList.remove('mode');
-    M.map.off('move', drawMove);
+    M.offMove(drawMove);
     M.draft(null);
     M.stopEdit();
     M.select(null);
@@ -782,7 +782,7 @@
       purpose === 'move' ? 'Новое место узла «' + o.data.name + '»' : 'Новый узел',
       'Подвиньте карту так, чтобы перекрестие встало на нужное место.',
       [{ act: 'mode-cancel', label: 'Отмена' }, { act: 'mode-me', label: 'Моё место' }, { act: 'mode-ok', label: 'Здесь', cls: 'primary' }]);
-    if (o) M.map.setView([o.data.lat, o.data.lng], Math.max(M.map.getZoom(), 16));
+    if (o) M.setView([o.data.lat, o.data.lng], Math.max(M.zoom(), 15));
   }
 
   function startPick() {
@@ -796,7 +796,7 @@
   function startDraw(a) {
     if (!D.view.get(a)) return;
     setMode({ type: 'draw', a: a, pts: [], snap: null, sig: '' }, '', '', []);
-    M.map.on('move', drawMove);
+    M.onMove(drawMove);
     updateDraw();
   }
 
@@ -806,7 +806,7 @@
     var first = D.view.get(mode.a);
     if (!first) { cancelMode(true); U.toast('Начальный узел удалил другой пользователь'); return; }
     var c = M.center();
-    var near = M.nodeNear(L.latLng(c), 30, mode.a), end = c;
+    var near = M.nodeNear(c, 30, mode.a), end = c;
     if (near) { var n = D.view.get(near); end = [n.data.lat, n.data.lng]; }
     if (near !== mode.snap) { mode.snap = near; M.select(near); }
     var pts = [[first.data.lat, first.data.lng]].concat(mode.pts, [end]), len = 0;
@@ -854,7 +854,7 @@
     });
     updatePathBar();
     var pts = D.linkPoints(o);
-    if (pts) M.map.fitBounds(L.latLngBounds(pts), { paddingTopLeft: [40, 90], paddingBottomRight: [40, 190], maxZoom: 17 });
+    M.fitPoints(pts, { top: 90, left: 44, right: 44, bottom: 210 }, 16);
   }
 
   function updatePathBar() {
@@ -944,6 +944,12 @@
   NM.on('user', function () { updateChrome(); rerenderIfPassive(); });
   NM.on('presence', function () { if (currentIs('sync')) render(); });
   NM.on('locate', updateChrome);
+  // компас: появляется, когда карта повёрнута; стрелка показывает на север, нажатие возвращает север наверх
+  NM.on('bearing', function (b) {
+    $('btnNorth').hidden = Math.abs(b) < 0.5;
+    $('needle').style.transform = 'rotate(' + (-b) + 'deg)';
+  });
+  NM.on('mapready', function () { NM.emit('bearing', M.bearing()); });
   NM.on('objects', function () {
     if (mode && mode.type === 'path' && !D.view.has(mode.id)) { cancelMode(true); U.toast('Линию удалил другой пользователь'); }
     rerenderIfPassive();
@@ -963,6 +969,7 @@
     layer: function () { M.setLayer(M.prefs.layer === 'osm' ? 'sat' : 'osm'); },
     locate: function () { M.locate(); },
     fit: function () { M.fitAll(); },
+    north: function () { M.north(); },
     fab: function () { var m = $('fabmenu'); m.hidden = !m.hidden; $('fab').classList.toggle('open', !m.hidden); },
     'add-node': function () { closeFab(); hist = []; startPlace('new'); },
     'add-link': function () {
@@ -1005,7 +1012,7 @@
     'mode-cancel': function () { cancelMode(false); },
     'mode-ok': modeOk,
     'mode-me': function () {
-      if (M.myPos) M.map.setView(M.myPos, Math.max(M.map.getZoom(), 17)); else M.locate();
+      if (M.myPos) M.setView(M.myPos, Math.max(M.zoom(), 16)); else M.locate();
     },
     'path-reset': function () { mode.undo.push(mode.path); mode.path = []; M.editSet([]); updatePathBar(); },
     'path-undo': function () { if (mode.undo.length) { mode.path = mode.undo.pop(); M.editSet(mode.path); updatePathBar(); } },
@@ -1052,7 +1059,16 @@
     var el = e.target.closest('[data-act]');
     if (!el) return;
     var fn = actions[el.dataset.act];
-    if (fn) { e.preventDefault(); fn(el.dataset, el, e); }
+    if (!fn) return;
+    e.preventDefault();
+    try {
+      fn(el.dataset, el, e);
+    } catch (err) {
+      // ошибка в действии не должна оставлять человека в режиме без кнопок
+      console.error(err);
+      if (mode) cancelMode(true);
+      U.toast('Не получилось выполнить действие: ' + (err && err.message ? err.message : err), 6000);
+    }
   });
 
   document.addEventListener('submit', function (e) {
@@ -1077,7 +1093,7 @@
       if (el.checked) delete h[el.value]; else h[el.value] = true;
       M.savePrefs(); M.rebuild();
     } else if (el.id === 'fltLabels') {
-      M.prefs.labels = el.checked; M.savePrefs(); M.updateLabels();
+      M.setLabels(el.checked);
     } else if (el.id === 'impFile' && el.files[0]) {
       readImport(el.files[0]);
     }
@@ -1113,6 +1129,11 @@
     head.addEventListener('touchcancel', end);
   })();
 
+  var fitPending = false;
+  NM.on('objects', function () {
+    if (fitPending && D.nodes().length) { fitPending = false; setTimeout(M.fitAll, 150); }
+  });
+
   function updateHint() {
     $('hint').hidden = !(NM.session.token && NM.canEdit() && !mode && !hist.length && D.connected && D.view.size === 0);
   }
@@ -1129,7 +1150,7 @@
     return false;
   };
   document.addEventListener('keydown', function (e) { if (e.key === 'Escape') window.__nmBack(); });
-  window.addEventListener('resize', NM.debounce(function () { if (M.map) M.map.invalidateSize(); }, 150));
+  window.addEventListener('resize', NM.debounce(function () { M.resize(); }, 150));
 
   // ------------------------------------------------------------------ вход
 
@@ -1162,6 +1183,7 @@
       btn.disabled = true; btn.textContent = 'Вход…'; err.hidden = true;
       D.login(server, $('lgLogin').value, $('lgPass').value).then(function () {
         btn.disabled = false; btn.textContent = 'Войти';
+        fitPending = true;   // после входа показываем всю сеть, как только она загрузится
       }, function (e) {
         btn.disabled = false; btn.textContent = 'Войти';
         err.textContent = e.code === 'network'
@@ -1191,7 +1213,6 @@
       document.body.classList.remove('logged-out');
       updateChrome();
       M.rebuild();
-      if (!M.prefs.view) setTimeout(M.fitAll, 600);
       checkUpdate();
     } else {
       showLogin();

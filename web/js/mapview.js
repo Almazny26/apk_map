@@ -1,4 +1,10 @@
-/* Карта сети — отрисовка карты: подложка, узлы, линии, подписи, моё местоположение. */
+/* Карта сети — карта на MapLibre GL: подложка, узлы, линии, подписи, поворот, моё местоположение.
+ *
+ * MapLibre рисует карту через WebGL, поэтому масштаб меняется плавно, карту можно вращать двумя
+ * пальцами, а тысячи узлов и линий не тормозят. Узлы и линии — это два GeoJSON-источника,
+ * значки и подписи рисуются на canvas и отдаются карте как картинки (шрифты с сервера не нужны,
+ * так что подписи работают и без интернета).
+ */
 (function () {
   'use strict';
 
@@ -18,55 +24,18 @@
   };
 
   var SHAPES = ['circle', 'square', 'diamond', 'triangle', 'hex'];
-
-  // Маркер-фигура на общем холсте: тысячи узлов рисуются быстро, а вид узла различим по форме.
-  var ShapeMarker = L.CircleMarker.extend({
-    _updatePath: function () {
-      var r = this._renderer, shape = this.options.shape;
-      if (!r._ctx) { r._updateCircle(this); return; }
-      if (!r._drawing || this._empty()) return;
-      var p = this._point, ctx = r._ctx, s = Math.max(Math.round(this._radius), 1);
-      ctx.beginPath();
-      if (shape === 'square') {
-        ctx.rect(p.x - s * 0.9, p.y - s * 0.9, s * 1.8, s * 1.8);
-      } else if (shape === 'diamond') {
-        ctx.moveTo(p.x, p.y - s * 1.25); ctx.lineTo(p.x + s * 1.25, p.y);
-        ctx.lineTo(p.x, p.y + s * 1.25); ctx.lineTo(p.x - s * 1.25, p.y); ctx.closePath();
-      } else if (shape === 'triangle') {
-        ctx.moveTo(p.x, p.y - s * 1.25); ctx.lineTo(p.x + s * 1.2, p.y + s * 0.9);
-        ctx.lineTo(p.x - s * 1.2, p.y + s * 0.9); ctx.closePath();
-      } else if (shape === 'hex') {
-        for (var i = 0; i < 6; i++) {
-          var a = Math.PI / 3 * i;
-          ctx[i ? 'lineTo' : 'moveTo'](p.x + s * 1.15 * Math.cos(a), p.y + s * 1.15 * Math.sin(a));
-        }
-        ctx.closePath();
-      } else {
-        ctx.arc(p.x, p.y, s, 0, Math.PI * 2, false);
-      }
-      // белая кайма под контуром: значок читается и на схеме, и на спутниковом снимке
-      ctx.save();
-      ctx.lineJoin = 'round';
-      ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = this.options.weight + 4;
-      ctx.globalAlpha = 0.95;
-      ctx.stroke();
-      ctx.restore();
-      r._fillStroke(ctx, this);
-    }
-  });
+  var BLUE = '#0b6bcb';
+  var EMPTY = { type: 'FeatureCollection', features: [] };
 
   var M = NM.map = {
     map: null,
+    ready: false,
     prefs: { layer: 'osm', view: null, hidden: { node_types: {}, statuses: {}, link_types: {} }, labels: true },
-    nodeMarkers: new Map(),   // id узла -> маркер
-    linkLines: new Map(),     // id линии -> {line, halo}
     selected: null,
     myPos: null
   };
 
-  var baseLayer = null, linkGroup, haloGroup, caseGroup, nodeGroup, labelGroup, selGroup, draftGroup, meGroup;
-  var watchId = null, follow = false;
+  var map = null, touch = false, linkLayerIds = [], watchId = null, follow = false, dirty = false;
 
   M.savePrefs = NM.debounce(function () { NM.kv.set('prefs', M.prefs); }, 800);
 
@@ -76,87 +45,220 @@
     return 'circle';
   };
 
-  function radius() {
-    var z = M.map.getZoom();
-    return z < 9 ? 4 : z < 12 ? 6 : z < 15 ? 8 : 10;
-  }
-
-  function statusColor(id) {
-    var st = NM.lookup('statuses', id);
-    return st ? st.color : '#64748b';
-  }
-
-  function isFirstStatus(id) {
-    var arr = D.settings.statuses || [];
-    return !id || (arr.length && arr[0].id === id);
-  }
-
+  function statusColor(id) { var st = NM.lookup('statuses', id); return st ? st.color : '#64748b'; }
+  function isFirstStatus(id) { var arr = D.settings.statuses || []; return !id || (arr.length && arr[0].id === id); }
   function hidden(o) {
     var h = M.prefs.hidden;
     if (h.statuses[o.data.status]) return true;
     return o.kind === 'node' ? !!h.node_types[o.data.type] : !!h.link_types[o.data.type];
   }
+  function ll(p) { return [p[1], p[0]]; }                      // [широта, долгота] -> [долгота, широта]
+  function line(points, props) {
+    return { type: 'Feature', properties: props || {}, geometry: { type: 'LineString', coordinates: points.map(ll) } };
+  }
+  function point(p, props) {
+    return { type: 'Feature', properties: props || {}, geometry: { type: 'Point', coordinates: ll(p) } };
+  }
+  function setData(source, features) {
+    var s = map && map.getSource(source);
+    if (s) s.setData({ type: 'FeatureCollection', features: features });
+  }
+
+  // ------------------------------------------------------------------ картинки значков и подписей
+
+  var dpr = Math.min(3, Math.max(2, Math.round(window.devicePixelRatio || 1)));
+
+  function nodeImage(shape, color, pending) {
+    var size = 30, c = document.createElement('canvas');
+    c.width = c.height = size * dpr;
+    var ctx = c.getContext('2d'), s = 9, x = size / 2, y = size / 2;
+    ctx.scale(dpr, dpr);
+    ctx.beginPath();
+    if (shape === 'square') ctx.rect(x - s * 0.9, y - s * 0.9, s * 1.8, s * 1.8);
+    else if (shape === 'diamond') { ctx.moveTo(x, y - s * 1.2); ctx.lineTo(x + s * 1.2, y); ctx.lineTo(x, y + s * 1.2); ctx.lineTo(x - s * 1.2, y); ctx.closePath(); }
+    else if (shape === 'triangle') { ctx.moveTo(x, y - s * 1.2); ctx.lineTo(x + s * 1.15, y + s * 0.85); ctx.lineTo(x - s * 1.15, y + s * 0.85); ctx.closePath(); }
+    else if (shape === 'hex') {
+      for (var i = 0; i < 6; i++) { var a = Math.PI / 3 * i; ctx[i ? 'lineTo' : 'moveTo'](x + s * 1.12 * Math.cos(a), y + s * 1.12 * Math.sin(a)); }
+      ctx.closePath();
+    } else ctx.arc(x, y, s, 0, Math.PI * 2);
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 6; ctx.stroke();        // белая кайма: видно и на схеме, и на снимке
+    ctx.fillStyle = color; ctx.fill();
+    ctx.strokeStyle = pending ? '#f59e0b' : '#0f172a'; ctx.lineWidth = pending ? 3 : 1.6; ctx.stroke();
+    return ctx.getImageData(0, 0, c.width, c.height);
+  }
+
+  function labelImage(text) {
+    var c = document.createElement('canvas'), ctx = c.getContext('2d');
+    var font = '600 12px system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif';
+    ctx.font = font;
+    if (text.length > 40) text = text.slice(0, 39) + '…';
+    var w = Math.ceil(ctx.measureText(text).width) + 12, h = 20;
+    c.width = w * dpr; c.height = h * dpr;
+    ctx = c.getContext('2d');
+    ctx.scale(dpr, dpr);
+    ctx.fillStyle = 'rgba(255,255,255,0.94)';
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(0.5, 0.5, w - 1, h - 1, 5); else ctx.rect(0.5, 0.5, w - 1, h - 1);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(15,23,42,0.18)'; ctx.lineWidth = 1; ctx.stroke();
+    ctx.font = font; ctx.fillStyle = '#0f172a'; ctx.textBaseline = 'middle';
+    ctx.fillText(text, 6, h / 2 + 0.5);
+    return ctx.getImageData(0, 0, c.width, c.height);
+  }
+
+  function onImageMissing(e) {
+    var id = e.id;
+    if (map.hasImage(id)) return;
+    if (id.indexOf('n|') === 0) {
+      var p = id.split('|');
+      map.addImage(id, nodeImage(p[1], p[2], p[3] === '1'), { pixelRatio: dpr });
+    } else if (id.indexOf('l|') === 0) {
+      map.addImage(id, labelImage(id.slice(2)), { pixelRatio: dpr });
+    }
+  }
+
+  // ------------------------------------------------------------------ создание карты
 
   M.init = function () {
     var saved = NM.kv.get('prefs');
     if (saved) {
       for (var k in saved) M.prefs[k] = saved[k];
       M.prefs.hidden = M.prefs.hidden || {};
-      ['node_types', 'statuses', 'link_types'].forEach(function (key) {
-        M.prefs.hidden[key] = M.prefs.hidden[key] || {};
-      });
+      ['node_types', 'statuses', 'link_types'].forEach(function (key) { M.prefs.hidden[key] = M.prefs.hidden[key] || {}; });
     }
-    var touch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
-    var map = M.map = L.map('map', {
-      zoomControl: false,
-      preferCanvas: true,
-      renderer: L.canvas({ tolerance: touch ? 14 : 5, padding: 0.4 }),
-      minZoom: 3, maxZoom: 19,
-      worldCopyJump: true
+    touch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+    var v = M.prefs.view;
+
+    var sources = {};
+    NM.TILE_LAYERS.forEach(function (l) {
+      sources['base-' + l.id] = { type: 'raster', tiles: [NM.tileUrl(l)], tileSize: 256, maxzoom: l.maxNativeZoom, attribution: l.attribution };
     });
-    map.attributionControl.setPrefix(false);
-    if (!touch) L.control.zoom({ position: 'bottomleft', zoomInTitle: 'Приблизить', zoomOutTitle: 'Отдалить' }).addTo(map);
-    L.control.scale({ imperial: false, position: 'bottomleft' }).addTo(map);
+    ['links', 'nodes', 'sel', 'draft', 'edit', 'me'].forEach(function (s) { sources[s] = { type: 'geojson', data: EMPTY }; });
 
-    haloGroup = L.layerGroup().addTo(map);
-    caseGroup = L.layerGroup().addTo(map);
-    linkGroup = L.layerGroup().addTo(map);
-    selGroup = L.layerGroup().addTo(map);
-    nodeGroup = L.layerGroup().addTo(map);
-    draftGroup = L.layerGroup().addTo(map);
-    meGroup = L.layerGroup().addTo(map);
-    labelGroup = L.layerGroup().addTo(map);
+    var layers = [{ id: 'bg', type: 'background', paint: { 'background-color': '#e8ecef' } }];
+    NM.TILE_LAYERS.forEach(function (l) {
+      layers.push({ id: 'base-' + l.id, type: 'raster', source: 'base-' + l.id,
+        layout: { visibility: l.id === M.prefs.layer ? 'visible' : 'none' }, paint: { 'raster-fade-duration': 120 } });
+    });
+    var round = { 'line-join': 'round', 'line-cap': 'round' };
+    layers.push(
+      { id: 'link-halo', type: 'line', source: 'links', filter: ['has', 'halo'], layout: round,
+        paint: { 'line-color': ['get', 'halo'], 'line-width': 13, 'line-opacity': 0.45 } },
+      { id: 'link-case', type: 'line', source: 'links', layout: round,
+        paint: { 'line-color': '#ffffff', 'line-width': 7.5, 'line-opacity': 0.85 } },
+      // сюда (перед sel-link) вставляются слои линий по видам, см. buildLinkLayers
+      { id: 'sel-link', type: 'line', source: 'sel', filter: ['==', ['geometry-type'], 'LineString'], layout: round,
+        paint: { 'line-color': BLUE, 'line-width': 15, 'line-opacity': 0.32 } },
+      { id: 'sel-node', type: 'circle', source: 'sel', filter: ['==', ['geometry-type'], 'Point'],
+        paint: { 'circle-radius': 19, 'circle-color': BLUE, 'circle-opacity': 0.18, 'circle-stroke-color': BLUE, 'circle-stroke-width': 3 } },
+      { id: 'me-acc', type: 'fill', source: 'me', filter: ['==', ['geometry-type'], 'Polygon'],
+        paint: { 'fill-color': BLUE, 'fill-opacity': 0.1, 'fill-outline-color': BLUE } },
+      { id: 'nodes', type: 'symbol', source: 'nodes',
+        layout: { 'icon-image': ['get', 'icon'], 'icon-allow-overlap': true, 'icon-ignore-placement': true,
+          'icon-size': ['interpolate', ['linear'], ['zoom'], 4, 0.42, 8, 0.6, 12, 0.85, 15, 1.05] } },
+      { id: 'labels', type: 'symbol', source: 'nodes', minzoom: 11.8,
+        layout: { 'icon-image': ['get', 'label'], 'icon-anchor': 'left', 'icon-offset': [14, 0], 'icon-padding': 3,
+          visibility: M.prefs.labels ? 'visible' : 'none' } },
+      { id: 'edit-case', type: 'line', source: 'edit', layout: round, paint: { 'line-color': '#ffffff', 'line-width': 9, 'line-opacity': 0.95 } },
+      { id: 'edit-line', type: 'line', source: 'edit', layout: round, paint: { 'line-color': BLUE, 'line-width': 4.5 } },
+      { id: 'draft-case', type: 'line', source: 'draft', filter: ['==', ['geometry-type'], 'LineString'], layout: round,
+        paint: { 'line-color': '#ffffff', 'line-width': 8, 'line-opacity': 0.9 } },
+      { id: 'draft-line', type: 'line', source: 'draft', filter: ['==', ['get', 'kind'], 'fixed'], layout: round,
+        paint: { 'line-color': BLUE, 'line-width': 4 } },
+      { id: 'draft-tail', type: 'line', source: 'draft', filter: ['==', ['get', 'kind'], 'tail'],
+        paint: { 'line-color': BLUE, 'line-width': 3.5, 'line-dasharray': [2, 2.4] } },
+      { id: 'draft-dots', type: 'circle', source: 'draft', filter: ['==', ['geometry-type'], 'Point'],
+        paint: { 'circle-radius': 5, 'circle-color': '#ffffff', 'circle-stroke-color': BLUE, 'circle-stroke-width': 2.5 } },
+      { id: 'me-dot', type: 'circle', source: 'me', filter: ['==', ['geometry-type'], 'Point'],
+        paint: { 'circle-radius': 7, 'circle-color': BLUE, 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 3 } }
+    );
 
-    M.setLayer(M.prefs.layer);
-    if (M.prefs.view) map.setView(M.prefs.view.c, M.prefs.view.z);
-    else map.setView([61, 60], 4);
+    map = M.map = new maplibregl.Map({
+      container: 'map',
+      style: { version: 8, sources: sources, layers: layers },
+      center: v ? [v.c[1], v.c[0]] : [60, 61],
+      zoom: v ? v.z : 3.2,
+      bearing: v && v.b ? v.b : 0,
+      minZoom: 1.5, maxZoom: 19,
+      attributionControl: false,
+      pitchWithRotate: false, maxPitch: 0,     // карта плоская: вращение есть, наклона нет
+      fadeDuration: 120,
+      clickTolerance: touch ? 6 : 3
+    });
+    map.touchPitch.disable();
+    map.addControl(new maplibregl.AttributionControl({ compact: true }), 'bottom-left');
+    map.addControl(new maplibregl.ScaleControl({ maxWidth: 110, unit: 'metric' }), 'bottom-left');
+    if (!touch) map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'bottom-left');
 
+    map.on('styleimagemissing', onImageMissing);
+    map.on('load', function () {
+      M.ready = true;
+      buildLinkLayers();
+      M.rebuild();
+      if (!M.prefs.view) setTimeout(M.fitAll, 50);
+      NM.emit('mapready');
+    });
     map.on('moveend', function () {
       var c = map.getCenter();
-      M.prefs.view = { c: [c.lat, c.lng], z: map.getZoom() };
+      M.prefs.view = { c: [c.lat, c.lng], z: map.getZoom(), b: map.getBearing() };
       M.savePrefs();
-      updateLabels();
     });
-    map.on('zoomend', function () {
-      var r = radius();
-      M.nodeMarkers.forEach(function (m) { m.setRadius(r); });
-      drawSelection();
-    });
-    map.on('click', function (e) { NM.emit('maptap', e.latlng); });
+    map.on('rotate', function () { NM.emit('bearing', map.getBearing()); });
     map.on('dragstart', function () { if (follow) { follow = false; NM.emit('locate'); } });
-
-    M.rebuild();
-    if (!M.prefs.view) M.fitAll();
+    map.on('click', onClick);
+    map.on('error', function (e) {
+      // плитки без связи не загружаются — это штатно; остальное пишем в консоль
+      var msg = e && e.error && e.error.message || '';
+      if (msg && !/Failed to fetch|NetworkError|Load failed|AJAXError|\(0\)|504|404/.test(msg)) console.error(e.error);
+    });
+    document.body.classList.toggle('sat', M.prefs.layer === 'sat');
   };
+
+  /** Нажатие: ищем узел или линию рядом с пальцем; узел важнее линии, из узлов — ближайший. */
+  function onClick(e) {
+    var t = touch ? 16 : 7, p = e.point;
+    var layers = ['nodes'].concat(linkLayerIds).filter(function (id) { return map.getLayer(id); });
+    var feats = map.queryRenderedFeatures([[p.x - t, p.y - t], [p.x + t, p.y + t]], { layers: layers });
+    var best = null, bestD = Infinity, link = null;
+    feats.forEach(function (f) {
+      if (f.layer.id === 'nodes') {
+        var q = map.project(f.geometry.coordinates), d = Math.hypot(q.x - p.x, q.y - p.y);
+        if (d < bestD) { bestD = d; best = f.properties.id; }
+      } else if (!link) link = f.properties.id;
+    });
+    if (best || link) NM.emit('tap', best || link);
+    else NM.emit('maptap', { lat: e.lngLat.lat, lng: e.lngLat.lng });
+  }
+
+  /** Пунктир в MapLibre задаётся на слой, а не на объект, поэтому на каждый вид линий — свой слой. */
+  function buildLinkLayers() {
+    linkLayerIds.forEach(function (id) { if (map.getLayer(id)) map.removeLayer(id); });
+    linkLayerIds = [];
+    var types = D.settings.link_types || [], ids = types.map(function (t) { return t.id; });
+    function add(id, filter, dash) {
+      var paint = { 'line-color': ['get', 'color'], 'line-width': 4, 'line-opacity': ['case', ['get', 'pending'], 0.65, 0.96] };
+      if (dash) paint['line-dasharray'] = dash;
+      map.addLayer({ id: id, type: 'line', source: 'links', filter: filter,
+        layout: { 'line-join': 'round', 'line-cap': dash ? 'butt' : 'round' }, paint: paint }, 'sel-link');
+      linkLayerIds.push(id);
+    }
+    types.forEach(function (t, i) {
+      var dash = null;
+      if (t.dash) {
+        dash = t.dash.split(/[\s,]+/).map(function (n) { return Math.max(0.1, parseFloat(n) / 4); });
+        if (dash.length < 2 || dash.some(isNaN)) dash = null;
+      }
+      add('link-t' + i, ['==', ['get', 'type'], t.id], dash);
+    });
+    add('link-other', ['!', ['in', ['get', 'type'], ['literal', ids]]], null);
+  }
 
   M.setLayer = function (id) {
     var def = NM.TILE_LAYERS.filter(function (l) { return l.id === id; })[0] || NM.TILE_LAYERS[0];
-    if (baseLayer) M.map.removeLayer(baseLayer);
-    baseLayer = L.tileLayer(NM.tileUrl(def), {
-      maxZoom: 19, maxNativeZoom: def.maxNativeZoom, attribution: def.attribution,
-      keepBuffer: 3, updateWhenIdle: false
-    }).addTo(M.map);
-    baseLayer.bringToBack();
+    NM.TILE_LAYERS.forEach(function (l) {
+      if (map.getLayer('base-' + l.id)) map.setLayoutProperty('base-' + l.id, 'visibility', l.id === def.id ? 'visible' : 'none');
+    });
     M.prefs.layer = def.id;
     M.savePrefs();
     document.body.classList.toggle('sat', def.id === 'sat');
@@ -164,214 +266,166 @@
 
   // ------------------------------------------------------------------ узлы и линии
 
-  function drawNode(o) {
-    var old = M.nodeMarkers.get(o.id);
-    if (old) { nodeGroup.removeLayer(old); M.nodeMarkers.delete(o.id); }
-    if (hidden(o) || typeof o.data.lat !== 'number' || typeof o.data.lng !== 'number') return;
-    var m = new ShapeMarker([o.data.lat, o.data.lng], {
-      radius: radius(),
-      shape: M.shapeOf(o.data.type),
-      color: o.pending ? '#f59e0b' : '#0f172a',
-      weight: o.pending ? 3 : 1.5,
-      fillColor: statusColor(o.data.status),
-      fillOpacity: 1,
-      bubblingMouseEvents: false
+  function rebuildNow() {
+    dirty = false;
+    if (!M.ready) return;
+    var nodes = [], links = [];
+    D.view.forEach(function (o) {
+      if (o.kind !== 'node' || hidden(o) || typeof o.data.lat !== 'number' || typeof o.data.lng !== 'number') return;
+      nodes.push(point([o.data.lat, o.data.lng], {
+        id: o.id,
+        icon: 'n|' + M.shapeOf(o.data.type) + '|' + statusColor(o.data.status) + '|' + (o.pending ? 1 : 0),
+        label: 'l|' + (o.data.name || '')
+      }));
     });
-    m.on('click', function () { NM.emit('tap', o.id); });
-    m.addTo(nodeGroup);
-    M.nodeMarkers.set(o.id, m);
-  }
-
-  function removeLink(id) {
-    var old = M.linkLines.get(id);
-    if (!old) return;
-    linkGroup.removeLayer(old.line);
-    caseGroup.removeLayer(old.casing);
-    if (old.halo) haloGroup.removeLayer(old.halo);
-    M.linkLines.delete(id);
-  }
-
-  function drawLink(o) {
-    removeLink(o.id);
-    var pts = D.linkPoints(o);
-    if (!pts || hidden(o)) return;
-    var a = D.view.get(o.data.a), b = D.view.get(o.data.b);
-    if (hidden(a) || hidden(b)) return;
-    var t = NM.lookup('link_types', o.data.type);
-    var line = L.polyline(pts, {
-      color: t ? t.color : '#475569',
-      weight: 4,
-      opacity: o.pending ? 0.7 : 0.95,
-      dashArray: t && t.dash ? t.dash : null,
-      lineCap: t && t.dash ? 'butt' : 'round',
-      lineJoin: 'round',
-      bubblingMouseEvents: false
+    D.view.forEach(function (o) {
+      if (o.kind !== 'link' || hidden(o)) return;
+      var pts = D.linkPoints(o);
+      if (!pts) return;
+      var a = D.view.get(o.data.a), b = D.view.get(o.data.b);
+      if (hidden(a) || hidden(b)) return;
+      var t = NM.lookup('link_types', o.data.type);
+      var props = { id: o.id, type: o.data.type || '', color: t ? t.color : '#475569', pending: !!o.pending };
+      if (!isFirstStatus(o.data.status)) props.halo = statusColor(o.data.status);   // необычное состояние подсвечивает линию
+      links.push(line(pts, props));
     });
-    line.on('click', function () { NM.emit('tap', o.id); });
-    // белая подложка отделяет линию от рисунка карты
-    var casing = L.polyline(pts, { color: '#ffffff', weight: 7.5, opacity: 0.85, interactive: false, lineJoin: 'round' });
-    casing.addTo(caseGroup);
-    line.addTo(linkGroup);
-    var halo = null;
-    if (!isFirstStatus(o.data.status)) {
-      // состояние линии, отличное от обычного, показываем цветной подложкой под ней
-      halo = L.polyline(pts, { color: statusColor(o.data.status), weight: 12, opacity: 0.45, interactive: false });
-      halo.addTo(haloGroup);
-    }
-    M.linkLines.set(o.id, { line: line, halo: halo, casing: casing });
-  }
-
-  // Всё рисуется на одном холсте, и при нажатии Leaflet выбирает объект, нарисованный последним.
-  // Поэтому порядок такой: подсветка состояния, белая подложка, линии, узлы — узел всегда «сверху».
-  function restack() {
-    caseGroup.eachLayer(function (l) { l.bringToBack(); });
-    haloGroup.eachLayer(function (l) { l.bringToBack(); });
-    M.nodeMarkers.forEach(function (m) { m.bringToFront(); });
-  }
-
-  /** Перерисовывает изменившиеся объекты (и линии, приходящие в изменившиеся узлы). */
-  M.refresh = function (ids) {
-    if (!M.map) return;
-    var nodeIds = {}, linkIds = {};
-    ids.forEach(function (id) {
-      var o = D.view.get(id);
-      if (o) { (o.kind === 'node' ? nodeIds : linkIds)[id] = true; return; }
-      if (M.nodeMarkers.has(id)) { nodeGroup.removeLayer(M.nodeMarkers.get(id)); M.nodeMarkers.delete(id); nodeIds[id] = true; }
-      removeLink(id);
-    });
-    if (Object.keys(nodeIds).length) {
-      D.view.forEach(function (o) {
-        if (o.kind === 'link' && (nodeIds[o.data.a] || nodeIds[o.data.b])) linkIds[o.id] = true;
-      });
-    }
-    Object.keys(nodeIds).forEach(function (id) { var o = D.view.get(id); if (o) drawNode(o); });
-    Object.keys(linkIds).forEach(function (id) { var o = D.view.get(id); if (o) drawLink(o); else removeLink(id); });
-    if (Object.keys(linkIds).length) restack();
+    setData('nodes', nodes);
+    setData('links', links);
     if (M.selected && !D.view.has(M.selected)) M.selected = null;
     drawSelection();
-    updateLabels();
-  };
+  }
 
+  /** Перерисовка откладывается до следующего кадра: сколько бы объектов ни изменилось, она одна. */
   M.rebuild = function () {
-    if (!M.map) return;
-    nodeGroup.clearLayers(); linkGroup.clearLayers(); haloGroup.clearLayers(); caseGroup.clearLayers();
-    M.nodeMarkers.clear(); M.linkLines.clear();
-    D.view.forEach(function (o) { if (o.kind === 'node') drawNode(o); });
-    D.view.forEach(function (o) { if (o.kind === 'link') drawLink(o); });
-    restack();
-    drawSelection();
-    updateLabels();
+    if (dirty) return;
+    dirty = true;
+    setTimeout(rebuildNow, 16);
   };
+  M.refresh = M.rebuild;
 
-  var updateLabels = NM.debounce(function () {
-    labelGroup.clearLayers();
-    var map = M.map;
-    if (!M.prefs.labels || map.getZoom() < 13) return;
-    var b = map.getBounds().pad(0.05), n = 0;
-    M.nodeMarkers.forEach(function (m, id) {
-      if (n >= 250 || !b.contains(m.getLatLng())) return;
-      var o = D.view.get(id);
-      if (!o) return;
-      n++;
-      L.tooltip({ permanent: true, direction: 'right', offset: [radius() + 3, 0], className: 'nm-label', interactive: false })
-        .setLatLng(m.getLatLng()).setContent(NM.esc(o.data.name)).addTo(labelGroup);
-    });
-  }, 120);
-  M.updateLabels = updateLabels;
+  M.setLabels = function (on) {
+    M.prefs.labels = !!on; M.savePrefs();
+    if (map.getLayer('labels')) map.setLayoutProperty('labels', 'visibility', on ? 'visible' : 'none');
+  };
 
   // ------------------------------------------------------------------ выделение и навигация
 
   function drawSelection() {
-    selGroup.clearLayers();
-    var o = M.selected && D.view.get(M.selected);
-    if (!o) return;
-    if (o.kind === 'node') {
-      L.circleMarker([o.data.lat, o.data.lng], {
-        radius: radius() + 8, color: '#0b6bcb', weight: 3, fillColor: '#0b6bcb', fillOpacity: 0.18, interactive: false
-      }).addTo(selGroup);
-    } else {
-      var pts = D.linkPoints(o);
-      if (pts) L.polyline(pts, { color: '#0b6bcb', weight: 14, opacity: 0.35, interactive: false }).addTo(selGroup);
-    }
+    if (!M.ready) return;
+    var o = M.selected && D.view.get(M.selected), feats = [];
+    if (o && o.kind === 'node') feats.push(point([o.data.lat, o.data.lng]));
+    else if (o) { var pts = D.linkPoints(o); if (pts) feats.push(line(pts)); }
+    setData('sel', feats);
   }
 
   M.select = function (id) { M.selected = id || null; drawSelection(); };
-  M.restack = restack;
 
-  /** Показывает объект на карте с учётом того, что нижняя часть экрана закрыта карточкой. */
+  function padding() {
+    var pad = NM.ui ? NM.ui.mapPadding() : { paddingTopLeft: [30, 80], paddingBottomRight: [30, 40] };
+    return { left: pad.paddingTopLeft[0], top: pad.paddingTopLeft[1], right: pad.paddingBottomRight[0], bottom: pad.paddingBottomRight[1] };
+  }
+
+  /** Показывает набор точек целиком, с учётом панелей поверх карты. */
+  M.fitPoints = function (pts, pad, maxZoom) {
+    if (!pts || !pts.length) return;
+    var b = new maplibregl.LngLatBounds();
+    pts.forEach(function (p) { b.extend(ll(p)); });
+    map.fitBounds(b, { padding: pad || padding(), maxZoom: maxZoom || 15, duration: 450, bearing: map.getBearing() });
+  };
+
+  /** Показывает объект на карте с учётом того, что часть экрана закрыта карточкой. */
   M.focus = function (id, zoomIn) {
     var o = D.view.get(id);
     if (!o) return;
-    var pad = NM.ui ? NM.ui.mapPadding() : { paddingTopLeft: [20, 70], paddingBottomRight: [20, 20] };
     if (o.kind === 'node') {
-      var z = zoomIn ? Math.max(M.map.getZoom(), 15) : M.map.getZoom();
-      M.map.fitBounds(L.latLngBounds([o.data.lat, o.data.lng], [o.data.lat, o.data.lng]),
-        { paddingTopLeft: pad.paddingTopLeft, paddingBottomRight: pad.paddingBottomRight, maxZoom: z });
+      var p = padding();
+      // смещаем центр так, чтобы узел оказался посередине свободной от панелей части экрана
+      map.easeTo({ center: [o.data.lng, o.data.lat], zoom: zoomIn ? Math.max(map.getZoom(), 14) : map.getZoom(),
+        offset: [(p.left - p.right) / 2, (p.top - p.bottom) / 2], duration: 450 });
     } else {
-      var pts = D.linkPoints(o);
-      if (pts) M.map.fitBounds(L.latLngBounds(pts), { paddingTopLeft: pad.paddingTopLeft, paddingBottomRight: pad.paddingBottomRight, maxZoom: 16 });
+      M.fitPoints(D.linkPoints(o));
     }
   };
 
   M.fitAll = function () {
     var pts = [];
-    M.nodeMarkers.forEach(function (m) { pts.push(m.getLatLng()); });
-    if (pts.length) M.map.fitBounds(L.latLngBounds(pts), { padding: [40, 80], maxZoom: 15 });
+    D.view.forEach(function (o) { if (o.kind === 'node' && !hidden(o)) pts.push([o.data.lat, o.data.lng]); });
+    M.fitPoints(pts, { top: 90, bottom: 60, left: 50, right: 60 }, 14);
   };
 
-  M.center = function () { var c = M.map.getCenter(); return [c.lat, c.lng]; };
+  M.center = function () { var c = map.getCenter(); return [c.lat, c.lng]; };
+  M.zoom = function () { return map.getZoom(); };
+  M.setView = function (p, zoom, instant) {
+    var opts = { center: ll(p), zoom: zoom == null ? map.getZoom() : zoom };
+    if (instant) map.jumpTo(opts); else { opts.duration = 400; map.easeTo(opts); }
+  };
+  M.resize = function () { if (map) map.resize(); };
+  M.onMove = function (fn) { map.on('move', fn); };
+  M.offMove = function (fn) { map.off('move', fn); };
+  M.north = function () { map.easeTo({ bearing: 0, duration: 350 }); };
+  M.bearing = function () { return map ? map.getBearing() : 0; };
 
   // ------------------------------------------------------------------ черновик новой линии
 
-  /**
-   * Рисует линию, которую сейчас ведут: сплошная часть по поставленным точкам и пунктир
-   * от последней точки до перекрестия. dots — уже поставленные точки изгиба.
-   */
+  /** Линия, которую сейчас ведут: сплошная часть по поставленным точкам и пунктир до перекрестия. */
   M.draft = function (points, dots) {
-    draftGroup.clearLayers();
-    if (!points || points.length < 2) return;
-    var fixed = points.slice(0, points.length - 1), tail = points.slice(points.length - 2);
-    if (fixed.length > 1) {
-      L.polyline(fixed, { color: '#ffffff', weight: 8, opacity: 0.9, interactive: false, lineJoin: 'round' }).addTo(draftGroup);
-      L.polyline(fixed, { color: '#0b6bcb', weight: 4, interactive: false, lineJoin: 'round' }).addTo(draftGroup);
-    }
-    L.polyline(tail, { color: '#ffffff', weight: 7, opacity: 0.8, interactive: false }).addTo(draftGroup);
-    L.polyline(tail, { color: '#0b6bcb', weight: 3.5, dashArray: '7 9', interactive: false }).addTo(draftGroup);
-    (dots || []).forEach(function (p) {
-      L.circleMarker(p, { radius: 5, color: '#0b6bcb', weight: 2.5, fillColor: '#ffffff', fillOpacity: 1, interactive: false }).addTo(draftGroup);
-    });
+    if (!M.ready) return;
+    if (!points || points.length < 2) { setData('draft', []); return; }
+    var feats = [], fixed = points.slice(0, points.length - 1);
+    if (fixed.length > 1) feats.push(line(fixed, { kind: 'fixed' }));
+    feats.push(line(points.slice(points.length - 2), { kind: 'tail' }));
+    (dots || []).forEach(function (p) { feats.push(point(p)); });
+    setData('draft', feats);
   };
 
   /** Ближайший к точке узел в пределах px экранных пикселей (кроме exceptId) или null. */
-  M.nodeNear = function (latlng, px, exceptId) {
-    var c = M.map.latLngToContainerPoint(latlng), best = null, bestD = px;
-    M.nodeMarkers.forEach(function (m, id) {
-      if (id === exceptId) return;
-      var d = c.distanceTo(M.map.latLngToContainerPoint(m.getLatLng()));
-      if (d <= bestD) { bestD = d; best = id; }
+  M.nodeNear = function (p, px, exceptId) {
+    var c = map.project(ll(p)), best = null, bestD = px;
+    D.view.forEach(function (o) {
+      if (o.kind !== 'node' || o.id === exceptId || hidden(o)) return;
+      var q = map.project([o.data.lng, o.data.lat]), d = Math.hypot(q.x - c.x, q.y - c.y);
+      if (d <= bestD) { bestD = d; best = o.id; }
     });
     return best;
   };
 
+  /** Индекс отрезка ломаной, ближайшего к точке (в экранных пикселях). */
+  M.nearestSegment = function (points, p) {
+    var c = map.project(ll(p)), best = 0, bestD = Infinity;
+    for (var i = 0; i < points.length - 1; i++) {
+      var a = map.project(ll(points[i])), b = map.project(ll(points[i + 1]));
+      var dx = b.x - a.x, dy = b.y - a.y, len = dx * dx + dy * dy;
+      var t = len ? Math.max(0, Math.min(1, ((c.x - a.x) * dx + (c.y - a.y) * dy) / len)) : 0;
+      var d = Math.hypot(c.x - (a.x + t * dx), c.y - (a.y + t * dy));
+      if (d < bestD) { bestD = d; best = i; }
+    }
+    return best;
+  };
+
   // ------------------------------------------------------------------ редактор трассы
-  // Точки изгиба — обычные перетаскиваемые маркеры (а не фигуры на холсте): их удобно тянуть пальцем.
-  // Между соседними точками стоит полупрозрачная «средняя» точка: потянули её — появился новый изгиб.
+  // Точки изгиба существуют только в режиме правки. Это перетаскиваемые маркеры: зажал и перенёс.
+  // Между соседними точками стоит бледная «средняя» точка: потянули её — появился новый изгиб.
 
   var ed = null;
 
   function edPts() { return [ed.a].concat(ed.path, [ed.b]); }
   function edCopy() { return ed.path.map(function (p) { return [+p[0].toFixed(7), +p[1].toFixed(7)]; }); }
-  function edIcon(cls) { return L.divIcon({ className: 'nm-h ' + cls, iconSize: [36, 36], iconAnchor: [18, 18] }); }
   function mid(p, q) { return [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2]; }
+
+  function edMarker(p, cls) {
+    var el = document.createElement('div');
+    el.className = 'nm-h ' + cls;
+    return new maplibregl.Marker({ element: el, draggable: true }).setLngLat(ll(p)).addTo(map);
+  }
 
   function edSync(withMids) {
     var pts = edPts();
-    ed.line.setLatLngs(pts); ed.casing.setLatLngs(pts);
-    if (withMids) ed.mm.forEach(function (m, i) { m.setLatLng(mid(pts[i], pts[i + 1])); });
+    setData('edit', [line(pts)]);
+    if (withMids) ed.mids.forEach(function (m, i) { m.setLngLat(ll(mid(pts[i], pts[i + 1]))); });
   }
 
   function edChanged() {
-    // перестраиваем после того, как Leaflet закончит обработку перетаскивания
+    // перестраиваем после того, как карта закончит обработку перетаскивания
     setTimeout(function () {
       if (!ed) return;
       ed.path = edCopy();
@@ -380,40 +434,46 @@
     }, 0);
   }
 
+  function edClear() {
+    ed.verts.concat(ed.mids).forEach(function (m) { m.remove(); });
+    ed.verts = []; ed.mids = [];
+  }
+
   function edBuild() {
-    ed.layer.clearLayers(); ed.mm = [];
+    edClear();
     var pts = edPts();
-    ed.casing = L.polyline(pts, { color: '#ffffff', weight: 9, opacity: 0.95, interactive: false, lineJoin: 'round' }).addTo(ed.layer);
-    ed.line = L.polyline(pts, { color: '#0b6bcb', weight: 4.5, interactive: false, lineJoin: 'round' }).addTo(ed.layer);
+    setData('edit', [line(pts)]);
     for (var k = 0; k < pts.length - 1; k++) (function (i) {
-      var m = L.marker(mid(pts[i], pts[i + 1]), { icon: edIcon('m'), draggable: true, autoPan: true, zIndexOffset: 500, keyboard: false });
+      var m = edMarker(mid(pts[i], pts[i + 1]), 'm');
       m.on('dragstart', function () {
-        var ll = m.getLatLng();
-        ed.path.splice(i, 0, [ll.lat, ll.lng]);
-        ed.mm.forEach(function (x) { if (x !== m) x.setOpacity(0); });
-        var el = m.getElement(); if (el) { el.classList.remove('m'); el.classList.add('v'); }
+        var p = m.getLngLat();
+        ed.path.splice(i, 0, [p.lat, p.lng]);
+        ed.mids.forEach(function (x) { if (x !== m) x.getElement().style.visibility = 'hidden'; });
+        m.getElement().classList.remove('m'); m.getElement().classList.add('v', 'drag');
       });
-      m.on('drag', function () { var ll = m.getLatLng(); ed.path[i] = [ll.lat, ll.lng]; edSync(false); });
+      m.on('drag', function () { var p = m.getLngLat(); ed.path[i] = [p.lat, p.lng]; edSync(false); });
       m.on('dragend', function () { ed.quietUntil = Date.now() + 400; edChanged(); });
-      m.addTo(ed.layer); ed.mm.push(m);
+      ed.mids.push(m);
     })(k);
     ed.path.forEach(function (p, i) {
-      var m = L.marker(p, { icon: edIcon('v'), draggable: true, autoPan: true, zIndexOffset: 1000, keyboard: false });
-      m.on('drag', function () { var ll = m.getLatLng(); ed.path[i] = [ll.lat, ll.lng]; edSync(true); });
+      var m = edMarker(p, 'v');
+      m.on('dragstart', function () { m.getElement().classList.add('drag'); });
+      m.on('drag', function () { var q = m.getLngLat(); ed.path[i] = [q.lat, q.lng]; edSync(true); });
       m.on('dragend', function () { ed.quietUntil = Date.now() + 400; edChanged(); });
-      m.on('click', function () {
-        // сразу после перетаскивания браузер может прислать «нажатие» по только что созданной точке
+      m.getElement().addEventListener('click', function (e) {
+        e.stopPropagation();
+        // сразу после перетаскивания браузер может прислать «нажатие» — это не просьба удалить точку
         if (Date.now() < ed.quietUntil) return;
         ed.path.splice(i, 1); edChanged();
       });
-      m.addTo(ed.layer);
+      ed.verts.push(m);
     });
   }
 
   /** Включает правку трассы между точками a и b. onChange(path) вызывается после каждого изменения. */
   M.editPath = function (a, b, path, onChange) {
     M.stopEdit();
-    ed = { a: a, b: b, path: path.map(function (p) { return p.slice(); }), onChange: onChange, layer: L.layerGroup().addTo(M.map), mm: [], quietUntil: 0 };
+    ed = { a: a, b: b, path: path.map(function (p) { return p.slice(); }), onChange: onChange, verts: [], mids: [], quietUntil: 0 };
     edBuild();
   };
   M.editSet = function (path) {
@@ -422,29 +482,30 @@
     edBuild();
   };
   /** Добавляет точку изгиба в ближайший к нажатию отрезок. */
-  M.editInsert = function (latlng) {
-    if (!ed) return;
-    ed.path.splice(M.nearestSegment(edPts(), latlng), 0, [latlng.lat, latlng.lng]);
+  M.editInsert = function (p) {
+    if (!ed || Date.now() < ed.quietUntil) return;
+    ed.path.splice(M.nearestSegment(edPts(), [p.lat, p.lng]), 0, [p.lat, p.lng]);
     edChanged();
   };
   M.stopEdit = function () {
-    if (ed) { M.map.removeLayer(ed.layer); ed = null; }
-  };
-
-  /** Индекс отрезка ломаной, ближайшего к точке (в экранных пикселях). */
-  M.nearestSegment = function (points, latlng) {
-    var p = M.map.latLngToLayerPoint(latlng), best = 0, bestD = Infinity;
-    for (var i = 0; i < points.length - 1; i++) {
-      var d = L.LineUtil.pointToSegmentDistance(p, M.map.latLngToLayerPoint(points[i]), M.map.latLngToLayerPoint(points[i + 1]));
-      if (d < bestD) { bestD = d; best = i; }
-    }
-    return best;
+    if (!ed) return;
+    edClear(); ed = null;
+    setData('edit', []);
   };
 
   // ------------------------------------------------------------------ моё местоположение
 
-  M.locating = function () { return watchId !== null; };
   M.following = function () { return follow; };
+
+  function drawMe(acc) {
+    var feats = [point(M.myPos)];
+    if (acc && acc > 8) {
+      var ring = [], lat = M.myPos[0], lng = M.myPos[1], dLat = acc / 111320, dLng = acc / (111320 * Math.cos(lat * Math.PI / 180));
+      for (var i = 0; i <= 48; i++) { var a = i / 48 * 2 * Math.PI; ring.push([lng + dLng * Math.cos(a), lat + dLat * Math.sin(a)]); }
+      feats.push({ type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [ring] } });
+    }
+    setData('me', feats);
+  }
 
   M.locate = function () {
     if (!navigator.geolocation) { NM.emit('toast', 'На этом устройстве определение места недоступно'); return; }
@@ -452,22 +513,18 @@
       NM.emit('toast', 'В браузере определение места работает только по HTTPS. В приложении оно доступно всегда.');
       return;
     }
+    follow = true;
     if (watchId !== null && M.myPos) {
       // уже следим: повторное нажатие возвращает карту к моему месту
-      follow = true;
-      M.map.setView(M.myPos, Math.max(M.map.getZoom(), 16));
+      M.setView(M.myPos, Math.max(map.getZoom(), 15));
       NM.emit('locate');
       return;
     }
-    follow = true;
     if (watchId === null) {
       watchId = navigator.geolocation.watchPosition(function (pos) {
         M.myPos = [pos.coords.latitude, pos.coords.longitude];
-        M.myAcc = pos.coords.accuracy;
-        meGroup.clearLayers();
-        L.circle(M.myPos, { radius: pos.coords.accuracy, color: '#0b6bcb', weight: 1, fillOpacity: 0.1, interactive: false }).addTo(meGroup);
-        L.circleMarker(M.myPos, { radius: 7, color: '#ffffff', weight: 3, fillColor: '#0b6bcb', fillOpacity: 1, interactive: false }).addTo(meGroup);
-        if (follow) M.map.setView(M.myPos, Math.max(M.map.getZoom(), 16));
+        drawMe(pos.coords.accuracy);
+        if (follow) M.setView(M.myPos, Math.max(map.getZoom(), 15));
         NM.emit('locate');
       }, function (err) {
         navigator.geolocation.clearWatch(watchId);
@@ -484,7 +541,8 @@
   /** Список адресов плиток текущей области от текущего масштаба до maxZoom. */
   M.tilesForView = function (maxZoom) {
     var def = NM.TILE_LAYERS.filter(function (l) { return l.id === M.prefs.layer; })[0] || NM.TILE_LAYERS[0];
-    var b = M.map.getBounds(), z0 = Math.max(0, Math.floor(M.map.getZoom())), urls = [];
+    // у MapLibre масштаб считается для плиток 512 px, поэтому номер уровня обычных плиток на единицу больше
+    var b = map.getBounds(), z0 = Math.max(0, Math.round(map.getZoom()) + 1), urls = [];
     maxZoom = Math.min(maxZoom, def.maxNativeZoom);
     function tx(lng, z) { return Math.floor((lng + 180) / 360 * Math.pow(2, z)); }
     function ty(lat, z) {
@@ -500,7 +558,7 @@
     return urls;
   };
 
-  NM.on('objects', function (ids) { M.refresh(ids); });
-  NM.on('settings', function () { M.rebuild(); });
+  NM.on('objects', function () { M.rebuild(); });
+  NM.on('settings', function () { if (M.ready) { buildLinkLayers(); M.rebuild(); } });
   NM.on('reset', function () { M.rebuild(); });
 })();

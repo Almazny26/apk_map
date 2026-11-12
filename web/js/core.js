@@ -13,7 +13,7 @@ var NM = {};
   'use strict';
 
   NM.native = window.NetMapNative || null;
-  NM.CLIENT_VERSION = '1.1';
+  NM.CLIENT_VERSION = '1.2';
 
   // ------------------------------------------------------------------ мелочи
 
