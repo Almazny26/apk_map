@@ -125,12 +125,89 @@ class OfflineMapTest(unittest.TestCase):
         self.assertEqual(om.find(entries, 3 * 7 + 1)[0], 21)     # run_length 2
         self.assertIsNone(om.find(entries, 3 * 6 + 1))             # run_length 1
         with tempfile.TemporaryDirectory() as d:
-            m = om(os.path.join(d, "map", "karta-offline.pmtiles"), lambda *a: None)
-            self.assertFalse(m.info()["present"])
+            m = om(os.path.join(d, "map"), lambda *a: None)
+            self.assertEqual(m.status()["files"], [])
             rnd = __import__("random").Random(1)
             root, leaves = m._dirs([(i * 7, 1, rnd.randrange(10 ** 9), rnd.randrange(1, 90000)) for i in range(200000)])
             self.assertLessEqual(len(root), 16384 - 127)
             self.assertTrue(leaves)
+
+    @staticmethod
+    def tiny(tiles, bounds=(33.0, 46.0, 34.0, 47.0)):
+        """Маленький файл PMTiles: tiles = {(z, x, y): байты}."""
+        import gzip
+        import struct
+        om = run.OfflineMap
+        data, entries = b"", []
+        for key in sorted(tiles, key=lambda k: om.tileid(*k)):
+            blob = gzip.compress(tiles[key], mtime=0)
+            entries.append((om.tileid(*key), 1, len(data), len(blob)))
+            data += blob
+        root, meta = om.write_dir(entries), gzip.compress(b"{}", mtime=0)
+        hdr = bytearray(b"PMTiles\x03")
+        hdr += struct.pack("<11Q", 127, len(root), 127 + len(root), len(meta), 0, 0, 127 + len(root) + len(meta), len(data),
+                           len(entries), len(entries), len(entries))
+        hdr += bytes([0, 2, 2, 1, 0, 15])
+        hdr += struct.pack("<iiii", *[int(v * 1e7) for v in bounds])
+        hdr += bytes([8]) + struct.pack("<ii", 0, 0)
+        return bytes(hdr) + root + meta + data
+
+    def test_files_tiles_upload_delete(self):
+        import gzip
+        import io
+        blob = self.tiny({(0, 0, 0): b"world", (15, 19352, 11573): b"house"})
+        with tempfile.TemporaryDirectory() as d:
+            m = run.OfflineMap(os.path.join(d, "map"), lambda *a: None)
+            slug = m.upload("Мой район (1).pmtiles", io.BytesIO(blob), len(blob))
+            st = m.status()
+            self.assertEqual([f["slug"] for f in st["files"]], [slug])
+            self.assertEqual(st["files"][0]["bounds"], [33.0, 46.0, 34.0, 47.0])
+            data, gz = m.tile(15, 19352, 11573)
+            self.assertTrue(gz)
+            self.assertEqual(gzip.decompress(data), b"house")
+            self.assertIsNone(m.tile(15, 1, 1))
+            with self.assertRaises(ValueError):
+                m.upload("x.pmtiles", io.BytesIO(b"not a map" * 40), 360)
+            self.assertTrue(m.delete(slug))
+            self.assertEqual(m.status()["files"], [])
+            self.assertIsNone(m.tile(0, 0, 0))
+
+
+class OfflineHttpTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        os.environ["KARTA_MAP_DIR"] = os.path.join(cls.tmp.name, "map")
+        app = run.App(cls.tmp.name, lambda *a: None)
+        os.environ.pop("KARTA_MAP_DIR")
+        cls.server = run.Server(("127.0.0.1", 0), run.make_handler(app))
+        cls.base = "http://127.0.0.1:%d" % cls.server.server_address[1]
+        threading.Thread(target=cls.server.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.tmp.cleanup()
+
+    def test_upload_tile_fonts(self):
+        blob = OfflineMapTest.tiny({(15, 19352, 11573): b"house"})
+        r = urllib.request.urlopen(urllib.request.Request(self.base + "/api/mapupload?name=test.pmtiles", data=blob, method="POST"), timeout=10)
+        self.assertTrue(json.loads(r.read())["ok"])
+        st = json.loads(urllib.request.urlopen(self.base + "/api/map", timeout=10).read())
+        self.assertEqual([f["slug"] for f in st["files"]], ["test"])
+        self.assertEqual([g["slug"] for g in st["regions"]], ["kherson", "zaporozhye", "crimea"])
+        r = urllib.request.urlopen(self.base + "/omap/15/19352/11573.mvt", timeout=10)
+        self.assertEqual(r.headers.get("Content-Encoding"), "gzip")
+        self.assertEqual(__import__("gzip").decompress(r.read()), b"house")
+        self.assertEqual(urllib.request.urlopen(self.base + "/omap/15/1/1.mvt", timeout=10).status, 204)
+        # шрифты подписей: есть диапазон — отдаётся, нет — пустой ответ, а не ошибка
+        r = urllib.request.urlopen(self.base + "/vendor/fonts/Noto%20Sans%20Regular/1024-1279.pbf", timeout=10)
+        self.assertGreater(len(r.read()), 1000)
+        r = urllib.request.urlopen(self.base + "/vendor/fonts/Noto%20Sans%20Regular/40000-40255.pbf", timeout=10)
+        self.assertEqual((r.status, r.read()), (200, b""))
+        with self.assertRaises(urllib.error.HTTPError):
+            urllib.request.urlopen(urllib.request.Request(self.base + "/api/mapupload?name=bad.pmtiles", data=b"x" * 500, method="POST"), timeout=10)
 
 
 if __name__ == "__main__":

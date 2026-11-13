@@ -41,7 +41,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.BufferedInputStream;
-import java.io.RandomAccessFile;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
@@ -82,6 +81,7 @@ public class MainActivity extends Activity {
     private WebView web;
     private Dem dem;
     private TileCache tileCache;
+    private OfflineTiles offline;
 
     private volatile String openedName = null;
     private volatile String openedText = null;
@@ -101,6 +101,16 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         tileCache = new TileCache(new File(getFilesDir(), "tilecache"));
         new Thread(tileCache::prune).start();
+        File maps = new File(getFilesDir(), "maps");
+        //noinspection ResultOfMethodCallIgnored
+        maps.mkdirs();
+        // файл карты из версий 3.0–3.1 переезжает в папку карт
+        File legacy = new File(getFilesDir(), "karta-offline.pmtiles");
+        if (legacy.isFile()) {
+            //noinspection ResultOfMethodCallIgnored
+            legacy.renameTo(new File(maps, "karta-offline.pmtiles"));
+        }
+        offline = new OfflineTiles(maps);
         web = new WebView(this);
         setContentView(web);
         WebSettings s = web.getSettings();
@@ -527,61 +537,133 @@ public class MainActivity extends Activity {
         }).start();
     }
 
-    // ------------------------------------------------------------------ офлайн-карта (3.0)
+    // ------------------------------------------------------------------ офлайн-карта районов (3.2)
 
-    private File mapFile() {
-        return new File(getFilesDir(), "karta-offline.pmtiles");
+    private volatile boolean mapBusy = false;
+    private volatile boolean mapCancel = false;
+
+    private void mapDone(boolean ok, String msg) {
+        final String m = JSONObject.quote(msg == null ? "" : msg);
+        runOnUiThread(() -> js("window.__kartaMap && window.__kartaMap(" + ok + "," + m + ")"));
     }
 
-    private RandomAccessFile mapRaf = null;
-
-    private synchronized void closeMap() {
-        if (mapRaf != null) {
-            try {
-                mapRaf.close();
-            } catch (IOException ignored) {
-                // всё равно
-            }
-            mapRaf = null;
-        }
+    private void mapProgress(String slug, long done, long total) {
+        final String q = JSONObject.quote(slug);
+        runOnUiThread(() -> js("window.__kartaMapProgress && window.__kartaMapProgress(" + q + "," + done + "," + total + ")"));
     }
 
-    /** Копирует файл карты к приложению; страница получает __kartaMap(ok, сообщение). */
-    private void importMap(InputStream in, String name) {
-        File tmp = new File(getFilesDir(), "karta-offline.pmtiles.part");
-        String msg;
-        boolean ok = false;
-        try (OutputStream out = new FileOutputStream(tmp)) {
-            byte[] buf = new byte[1 << 20];
+    /** Поток → файл карты в папке карт (через временный файл); ход — странице. */
+    private void storeMap(InputStream in, String slug, long total, long already, File tmp) throws IOException {
+        try (OutputStream out = new FileOutputStream(tmp, already > 0)) {
+            byte[] buf = new byte[1 << 18];
             int n;
-            long total = 0, shown = 0;
+            long done = already, shown = 0;
             while ((n = in.read(buf)) > 0) {
+                if (mapCancel) {
+                    throw new IOException("отменено");
+                }
                 out.write(buf, 0, n);
-                total += n;
-                if (total - shown >= 20L << 20) {
-                    shown = total;
-                    final long mb = total >> 20;
-                    runOnUiThread(() -> js("window.__kartaMapProgress && window.__kartaMapProgress(" + mb + ")"));
+                done += n;
+                if (done - shown >= 2L << 20) {
+                    shown = done;
+                    mapProgress(slug, done, total);
                 }
             }
             out.flush();
-            closeMap();
-            File dst = mapFile();
-            if (dst.exists() && !dst.delete()) {
-                throw new IOException("не удалось заменить старую карту");
+            if (total > 0 && done != total) {
+                throw new IOException("связь оборвалась, скачано не всё — нажмите «Скачать» ещё раз, продолжится с того же места");
             }
-            if (!tmp.renameTo(dst)) {
-                throw new IOException("не удалось сохранить карту");
+        }
+        byte[] magic = new byte[7];
+        try (InputStream chk = new java.io.FileInputStream(tmp)) {
+            if (chk.read(magic) != 7 || !"PMTiles".equals(new String(magic, StandardCharsets.US_ASCII))) {
+                throw new IOException("это не файл офлайн-карты");
             }
-            ok = true;
-            msg = (total >> 20) + " МБ";
+        }
+        offline.delete(slug);
+        File dst = new File(offline.dir(), slug + ".pmtiles");
+        if (!tmp.renameTo(dst)) {
+            throw new IOException("не удалось сохранить карту");
+        }
+        offline.scan();
+    }
+
+    /** Файл карты, выбранный на телефоне или открытый из мессенджера. */
+    private void importMap(InputStream in, String name) {
+        if (mapBusy) {
+            mapDone(false, "подождите, идёт загрузка другой карты");
+            return;
+        }
+        mapBusy = true;
+        mapCancel = false;
+        String slug = OfflineTiles.slug(name);
+        File tmp = new File(offline.dir(), slug + ".import");
+        try {
+            tmp.delete();
+            storeMap(in, slug, 0, 0, tmp);
+            mapDone(true, slug);
         } catch (Exception e) {
             tmp.delete();
-            msg = e.getMessage() == null ? e.toString() : e.getMessage();
+            mapDone(false, e.getMessage() == null ? e.toString() : e.getMessage());
+        } finally {
+            mapBusy = false;
         }
-        final String m = JSONObject.quote(msg);
-        final boolean r = ok;
-        runOnUiThread(() -> js("window.__kartaMap && window.__kartaMap(" + r + "," + m + ")"));
+    }
+
+    /** Скачать файл района из интернета; при обрыве следующая попытка продолжает с того же места. */
+    private void downloadMap(String slug, String address) {
+        File tmp = new File(offline.dir(), slug + ".part");
+        HttpURLConnection c = null;
+        try {
+            long have = tmp.isFile() ? tmp.length() : 0;
+            c = (HttpURLConnection) new URL(address).openConnection();
+            c.setConnectTimeout(20000);
+            c.setReadTimeout(30000);
+            c.setInstanceFollowRedirects(true);
+            c.setRequestProperty("User-Agent", "KartaSeti-Android");
+            if (have > 0) {
+                c.setRequestProperty("Range", "bytes=" + have + "-");
+            }
+            int code = c.getResponseCode();
+            if (code == 416) {
+                // временный файл уже целый или испорчен — начать заново
+                tmp.delete();
+                throw new IOException("попробуйте ещё раз");
+            }
+            if (code != 200 && code != 206) {
+                throw new IOException(code == 404 ? "файла этого района пока нет" : "сервер ответил " + code);
+            }
+            if (code == 200) {
+                have = 0;
+            }
+            long len = c.getContentLength() >= 0 ? c.getContentLength() : -1;
+            String cl = c.getHeaderField("Content-Length");
+            if (cl != null) {
+                try {
+                    len = Long.parseLong(cl.trim());
+                } catch (NumberFormatException ignored) {
+                    // размер неизвестен
+                }
+            }
+            long total = len > 0 ? have + len : 0;
+            mapProgress(slug, have, total);
+            try (InputStream in = c.getInputStream()) {
+                storeMap(in, slug, total, have, tmp);
+            }
+            mapDone(true, slug);
+        } catch (Exception e) {
+            if (mapCancel) {
+                tmp.delete();
+                mapDone(false, "отменено");
+            } else {
+                mapDone(false, e.getMessage() == null ? e.toString() : e.getMessage());
+            }
+        } finally {
+            if (c != null) {
+                c.disconnect();
+            }
+            mapBusy = false;
+        }
     }
 
     private void notifyOpened() {
@@ -844,46 +926,76 @@ public class MainActivity extends Activity {
             return "android";
         }
 
-        /** Размер файла офлайн-карты, 0 — карты нет. */
+        /** Файлы офлайн-карты: JSON [{slug, size, mtime, bounds}]. */
         @JavascriptInterface
-        public double mapSize() {
-            File f = mapFile();
-            return f.isFile() ? f.length() : 0;
+        public String mapList() {
+            return offline.list();
         }
 
+        /** Плитка офлайн-карты в base64 (страница рисует карту сама); пусто — плитки нет. */
         @JavascriptInterface
-        public double mapDate() {
-            File f = mapFile();
-            return f.isFile() ? f.lastModified() : 0;
+        public String mapTile(int z, int x, int y) {
+            byte[] b = offline.tile(z, x, y);
+            return b == null ? "" : Base64.encodeToString(b, Base64.NO_WRAP);
         }
 
-        /** Кусок файла карты в base64 (страница рисует карту сама). */
+        /** Файл из набора приложения (шрифты подписей карты) в base64; пусто — файла нет. */
         @JavascriptInterface
-        public String mapBytes(double offset, double length) {
-            synchronized (MainActivity.this) {
-                try {
-                    if (mapRaf == null) {
-                        mapRaf = new RandomAccessFile(mapFile(), "r");
-                    }
-                    int n = (int) Math.min(length, 16 << 20);
-                    byte[] b = new byte[n];
-                    mapRaf.seek((long) offset);
-                    mapRaf.readFully(b);
-                    return Base64.encodeToString(b, Base64.NO_WRAP);
-                } catch (Exception e) {
-                    closeMap();
-                    return "";
+        public String asset(String path) {
+            if (path == null || !path.startsWith("vendor/") || path.contains("..")) {
+                return "";
+            }
+            try (InputStream in = getAssets().open(path)) {
+                ByteArrayOutputStream out = new ByteArrayOutputStream(1 << 17);
+                byte[] buf = new byte[65536];
+                int n;
+                while ((n = in.read(buf)) > 0) {
+                    out.write(buf, 0, n);
                 }
+                return Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP);
+            } catch (IOException e) {
+                return "";
             }
         }
 
-        /** Удалить офлайн-карту. */
+        /** Скачать файл района. Ход — __kartaMapProgress(район, скачано, всего), итог — __kartaMap(ok, текст). */
         @JavascriptInterface
-        public boolean mapDelete() {
-            synchronized (MainActivity.this) {
-                closeMap();
-                return mapFile().delete();
+        public boolean mapDownload(String slug, String address) {
+            if (mapBusy || slug == null || address == null || !address.startsWith("https://")) {
+                return false;
             }
+            mapBusy = true;
+            mapCancel = false;
+            final String s = OfflineTiles.slug(slug);
+            new Thread(() -> downloadMap(s, address)).start();
+            return true;
+        }
+
+        @JavascriptInterface
+        public void mapCancel() {
+            mapCancel = true;
+        }
+
+        @JavascriptInterface
+        public boolean mapBusy() {
+            return mapBusy;
+        }
+
+        @JavascriptInterface
+        public boolean mapDelete(String slug) {
+            return offline.delete(slug);
+        }
+
+        /** Не гасить экран, пока приложение открыто (настройка). */
+        @JavascriptInterface
+        public void keepScreen(boolean on) {
+            runOnUiThread(() -> {
+                if (on) {
+                    getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                } else {
+                    getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                }
+            });
         }
     }
 }

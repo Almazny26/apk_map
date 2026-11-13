@@ -38,7 +38,7 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 WEB = os.path.join(ROOT, "web")
 HOST = "127.0.0.1"
 PORT = 8790
-VERSION = "3.1"
+VERSION = "3.2"
 
 mimetypes.add_type("text/javascript", ".js")
 mimetypes.add_type("application/json", ".json")
@@ -310,69 +310,270 @@ class TileCache:
 
 # ------------------------------------------------------------------ офлайн-карта (векторная, PMTiles)
 
-class OfflineMap:
-    """Подробная карта районов без интернета: файл map/karta-offline.pmtiles.
+class PmFile:
+    """Готовый файл PMTiles v3: по номеру плитки отдаёт её байты (как лежат в файле)."""
 
-    Данные — OpenStreetMap в виде векторных плиток (сборка Protomaps, масштаб до 15; страница
-    рисует их сама и увеличивает до 19). Скачивать такие файлы целиком разрешено (лицензия ODbL,
-    подпись «© OpenStreetMap»), в отличие от плиток-картинок с серверов OSM, Esri и Яндекса.
-    Программа вырезает из сборки всей Земли нужные районы: читает каталог плиток по частям
-    (HTTP Range) и скачивает только плитки этих районов: Херсонская и Запорожская области — около
-    200 МБ, все четыре района — около 420 МБ.
+    def __init__(self, path):
+        self.path = path
+        self.slug = os.path.splitext(os.path.basename(path))[0]
+        st = os.stat(path)
+        self.size, self.mtime = st.st_size, int(st.st_mtime * 1000)
+        self.lock = threading.Lock()
+        self.fh = open(path, "rb")
+        head = self.fh.read(127)
+        if len(head) < 127 or head[:7] != b"PMTiles" or head[7] != 3:
+            self.fh.close()
+            raise ValueError("не файл PMTiles")
+        (self.root_off, self.root_len, self.meta_off, self.meta_len, self.leaf_off, _ll, self.data_off, _dl,
+         _a, _b, _c) = struct.unpack_from("<11Q", head, 8)
+        self.internal, self.tile_comp = head[97], head[98]
+        self.minzoom, self.maxzoom = head[100], head[101]
+        w, s_, e, n = struct.unpack_from("<iiii", head, 102)
+        self.bounds = [w / 1e7, s_ / 1e7, e / 1e7, n / 1e7]      # запад, юг, восток, север
+        self.root = self._dir(self.root_off, self.root_len)
+        self.leaves = {}
+
+    def _read(self, off, ln):
+        with self.lock:
+            self.fh.seek(off)
+            return self.fh.read(ln)
+
+    def _dir(self, off, ln):
+        raw = self._read(off, ln)
+        return OfflineMap.read_dir(gzip.decompress(raw) if self.internal == 2 else raw)
+
+    def tile(self, z, x, y):
+        if z < self.minzoom or z > self.maxzoom:
+            return None
+        tid, d = OfflineMap.tileid(z, x, y), self.root
+        for _ in range(4):
+            e = OfflineMap.find(d, tid)
+            if not e:
+                return None
+            if e[1] > 0:
+                return self._read(self.data_off + e[2], e[3])
+            key = (e[2], e[3])
+            d = self.leaves.get(key)
+            if d is None:
+                if len(self.leaves) > 64:
+                    self.leaves.clear()
+                d = self.leaves[key] = self._dir(self.leaf_off + e[2], e[3])
+        return None
+
+    def close(self):
+        with self.lock:
+            self.fh.close()
+
+
+class OfflineMap:
+    """Подробная карта районов без интернета: файлы map/<район>.pmtiles.
+
+    Данные — OpenStreetMap в виде векторных плиток (сборка Protomaps, масштаб 0–15; в плитке 15-го
+    масштаба лежит всё до отдельных домов, страница рисует из них любой масштаб до 19). Скачивать
+    такие файлы целиком разрешено (лицензия ODbL), в отличие от плиток-картинок OSM, Esri и Яндекса.
+
+    Готовые файлы районов лежат в выпуске «maps» репозитория (их собирает GitHub Actions командой
+    `run.py --offline-map`); программа и приложение скачивают оттуда. Если выпуска нет, программа
+    вырезает район сама из сборки всей Земли: читает каталог плиток по частям (HTTP Range) и
+    скачивает только плитки района.
     """
 
     BUILDS = "https://build-metadata.protomaps.dev/builds.json"
     BASE = "https://build.protomaps.com/"
+    RELEASE = "https://github.com/Almazny26/apk_map/releases/download/maps/%s.pmtiles"
     REGIONS = {
-        # название: (юг, запад, север, восток)
-        "Крым": (44.35, 32.45, 46.25, 36.70),
-        "Херсонская область": (45.85, 31.45, 47.65, 35.40),
-        "Запорожская область": (46.05, 34.15, 48.20, 37.35),
-        "Ставропольский край": (43.60, 40.80, 46.30, 45.80),
+        # файл: (название, (юг, запад, север, восток))
+        "kherson": ("Херсонская область", (45.85, 31.45, 47.65, 35.40)),
+        "zaporozhye": ("Запорожская область", (46.05, 34.15, 48.20, 37.35)),
+        "crimea": ("Крым", (44.35, 32.45, 46.25, 36.70)),
     }
-    DEFAULT = ["Херсонская область", "Запорожская область"]   # заказчик: эти две — полностью
     MAXZOOM = 15
-    UA = "KartaSeti/%s (offline map extract; https://github.com/Almazny26/apk_map)"
+    UA = "KartaSeti/%s (offline map; https://github.com/Almazny26/apk_map)"
 
-    def __init__(self, path, log=print):
-        self.path = path
+    def __init__(self, folder, log=print):
+        self.dir = folder
         self.log = log
         self.lock = threading.Lock()
-        self.job = None          # ход скачивания: {state, done, total, error, ...}
-        self._fh = None
+        self.job = None          # ход скачивания: {state, slug, done, total, error}
+        self.cancel = False
+        self.files = {}          # slug -> PmFile
+        self.scan()
 
-    # --- чтение готового файла (страница просит куски по смещению)
+    # --- готовые файлы
 
-    def info(self):
-        try:
-            st = os.stat(self.path)
-            with open(self.path, "rb") as f:
-                head = f.read(127)
-            if head[:7] != b"PMTiles":
-                raise ValueError
-            meta = {}
+    def scan(self):
+        """Перечитать папку: открыть новые файлы, закрыть удалённые и изменённые."""
+        with self.lock:
+            found = {}
             try:
-                with open(self.path + ".json", encoding="utf-8") as f:
-                    meta = json.load(f)
+                names = sorted(n for n in os.listdir(self.dir) if n.endswith(".pmtiles"))
+            except OSError:
+                names = []
+            for n in names:
+                full = os.path.join(self.dir, n)
+                slug = n[:-8]
+                old = self.files.get(slug)
+                try:
+                    st = os.stat(full)
+                    if old and old.size == st.st_size and old.mtime == int(st.st_mtime * 1000):
+                        found[slug] = old
+                    else:
+                        found[slug] = PmFile(full)
+                except Exception:
+                    continue
+            for slug, f in self.files.items():
+                if found.get(slug) is not f:
+                    f.close()
+            self.files = found
+            return found
+
+    def tile(self, z, x, y):
+        """Плитка из первого файла, где она есть: (байты, сжата ли gzip) или None."""
+        for f in list(self.files.values()):
+            try:
+                data = f.tile(z, x, y)
             except Exception:
-                pass
-            return {"present": True, "size": st.st_size, "mtime": int(st.st_mtime * 1000),
-                    "regions": meta.get("regions"), "build": meta.get("build")}
+                data = None
+            if data:
+                return data, f.tile_comp == 2
+        return None
+
+    def name_of(self, slug):
+        if slug in self.REGIONS:
+            return self.REGIONS[slug][0]
+        try:
+            with open(os.path.join(self.dir, slug + ".pmtiles.json"), encoding="utf-8") as f:
+                r = json.load(f).get("regions")
+            if r:
+                return ", ".join(r)
         except Exception:
-            return {"present": False}
+            pass
+        return slug
 
-    def read(self, offset, length):
-        with self.lock:
-            if self._fh is None:
-                self._fh = open(self.path, "rb")
-            self._fh.seek(offset)
-            return self._fh.read(length)
+    def status(self):
+        files = self.scan()
+        return {
+            "files": [{"slug": k, "name": self.name_of(k), "size": f.size, "mtime": f.mtime, "bounds": f.bounds}
+                      for k, f in files.items()],
+            "regions": [{"slug": k, "name": v[0]} for k, v in self.REGIONS.items()],
+            "job": dict(self.job) if self.job else {"state": "idle"},
+        }
 
-    def close(self):
+    def delete(self, slug):
+        files = self.scan()
+        f = files.get(slug)
+        if not f:
+            return False
         with self.lock:
-            if self._fh:
-                self._fh.close()
-                self._fh = None
+            f.close()
+            self.files.pop(slug, None)
+        for ext in (".pmtiles", ".pmtiles.json"):
+            try:
+                os.remove(os.path.join(self.dir, slug + ext))
+            except OSError:
+                pass
+        return True
+
+    @staticmethod
+    def safe_slug(name):
+        base = os.path.splitext(os.path.basename(str(name or "")))[0]
+        base = re.sub(r"[^0-9A-Za-zА-Яа-яЁё_.-]+", "_", base).strip("._") or "karta"
+        return base[:60]
+
+    def upload(self, name, stream, length):
+        """Файл карты, выбранный на этом компьютере: сохранить в папку карт."""
+        if length < 127 or length > 8 * 1024 ** 3:
+            raise ValueError("не похоже на файл карты")
+        slug = self.safe_slug(name)
+        os.makedirs(self.dir, exist_ok=True)
+        tmp = os.path.join(self.dir, slug + ".pmtiles.part")
+        left, first = length, True
+        with open(tmp, "wb") as out:
+            while left > 0:
+                chunk = stream.read(min(left, 1 << 20))
+                if not chunk:
+                    break
+                if first and chunk[:7] != b"PMTiles":
+                    out.close()
+                    os.remove(tmp)
+                    raise ValueError("это не файл офлайн-карты (.pmtiles)")
+                first = False
+                out.write(chunk)
+                left -= len(chunk)
+        if left:
+            os.remove(tmp)
+            raise ValueError("файл передан не полностью")
+        self._install(tmp, slug)
+        return slug
+
+    def _install(self, tmp, slug):
+        with self.lock:
+            old = self.files.pop(slug, None)
+            if old:
+                old.close()
+        os.replace(tmp, os.path.join(self.dir, slug + ".pmtiles"))
+        self.scan()
+
+    # --- скачивание района
+
+    def start(self, slug):
+        if self.job and self.job.get("state") == "running":
+            return False
+        if slug not in self.REGIONS:
+            return False
+        self.cancel = False
+        self.job = {"state": "running", "slug": slug, "name": self.REGIONS[slug][0], "stage": "подготовка", "done": 0, "total": 0}
+        threading.Thread(target=self._run, args=(slug,), daemon=True).start()
+        return True
+
+    def stop(self):
+        self.cancel = True
+
+    def _run(self, slug):
+        os.makedirs(self.dir, exist_ok=True)
+        tmp = os.path.join(self.dir, slug + ".pmtiles.part")
+        try:
+            try:
+                self._fetch_release(slug, tmp)
+            except urllib.error.HTTPError as e:
+                if e.code != 404:
+                    raise
+                # готового файла нет — вырезаем район сами
+                self.extract([slug], tmp)
+            self._install(tmp, slug)
+            self.job.update(state="done", stage="готово")
+            self.log("Офлайн-карта скачана: %s" % self.REGIONS[slug][0])
+        except Exception as e:
+            if self.cancel:
+                self.job.update(state="idle", stage="отменено")
+            else:
+                self.job.update(state="error", error=str(e) or e.__class__.__name__)
+                self.log("Офлайн-карта не скачана: %s\n%s" % (e, traceback.format_exc()))
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+    def _fetch_release(self, slug, tmp):
+        req = urllib.request.Request(self.RELEASE % slug, headers={"User-Agent": self.UA % VERSION})
+        with urllib.request.urlopen(req, timeout=60) as r, open(tmp, "wb") as out:
+            total = int(r.headers.get("Content-Length") or 0)
+            done = 0
+            self.job.update(stage="скачивание", done=0, total=total)
+            while True:
+                if self.cancel:
+                    raise IOError("отменено")
+                chunk = r.read(1 << 18)
+                if not chunk:
+                    break
+                out.write(chunk)
+                done += len(chunk)
+                self.job.update(done=done)
+            if total and done != total:
+                raise IOError("связь оборвалась")
+        with open(tmp, "rb") as f:
+            if f.read(7) != b"PMTiles":
+                raise IOError("скачан не файл карты")
 
     # --- формат PMTiles v3
 
@@ -484,31 +685,12 @@ class OfflineMap:
                     raise
                 time.sleep(2 + attempt * 3)
 
-    def status(self):
-        j = dict(self.job) if self.job else {"state": "idle"}
-        j.update(self.info())
-        return j
-
-    def start(self, regions=None):
-        if self.job and self.job.get("state") == "running":
-            return False
-        regions = [r for r in (regions or self.DEFAULT) if r in self.REGIONS] or list(self.DEFAULT)
-        self.job = {"state": "running", "stage": "подготовка", "done": 0, "total": 0, "regions": regions, "started": time.time()}
-        threading.Thread(target=self._run, args=(regions,), daemon=True).start()
-        return True
-
-    def _run(self, regions):
-        try:
-            self.download(regions)
-            self.job.update(state="done", stage="готово")
-            self.log("Офлайн-карта скачана: %s" % ", ".join(regions))
-        except Exception as e:
-            self.job.update(state="error", error=str(e) or e.__class__.__name__)
-            self.log("Офлайн-карта не скачана: %s\n%s" % (e, traceback.format_exc()))
-
-    def download(self, regions, build=None, progress=None):
+    def extract(self, regions, path, build=None, progress=None):
+        """Вырезать районы (список файлов-ключей REGIONS) из сборки всей Земли в файл path."""
         job = self.job if self.job is not None else {}
         def stage(text, done=0, total=0):
+            if self.cancel:
+                raise IOError("отменено")
             job.update(stage=text, done=done, total=total)
             if progress:
                 progress(text, done, total)
@@ -550,7 +732,7 @@ class OfflineMap:
 
         stage("каталог плиток")
         wanted = {}
-        boxes = [self.REGIONS[r] for r in regions]
+        boxes = [self.REGIONS[r][1] for r in regions]
         for z in range(0, self.MAXZOOM + 1):
             for (s, w, n, e) in boxes:
                 for x in range(tx(w, z), tx(e, z) + 1):
@@ -573,8 +755,8 @@ class OfflineMap:
                 cur = [off, ln, [(off, ln)]]
                 chunks.append(cur)
 
-        tmp = self.path + ".part"
-        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        tmp = path + ".build"
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         newoff, pos, done = {}, 0, 0
         stage("скачивание", 0, total)
         from concurrent.futures import ThreadPoolExecutor
@@ -601,7 +783,7 @@ class OfflineMap:
                 entries.append([tid, 1, o, ln])
         root, leaves = self._dirs([tuple(e) for e in entries])
         meta = self._get(url, meta_off, meta_len) if meta_len else gzip.compress(b"{}", mtime=0)
-        b = [self.REGIONS[r] for r in regions]
+        b = boxes
         S, W, N, E = min(x[0] for x in b), min(x[1] for x in b), max(x[2] for x in b), max(x[3] for x in b)
         hdr = bytearray(b"PMTiles\x03")
         r_off = 127
@@ -624,11 +806,8 @@ class OfflineMap:
             with open(tmp + ".data", "rb") as src:
                 shutil.copyfileobj(src, f, 1024 * 1024)
         os.remove(tmp + ".data")
-        self.close()
-        os.replace(tmp, self.path)
-        with open(self.path + ".json", "w", encoding="utf-8") as f:
-            json.dump({"regions": regions, "build": build, "maxzoom": self.MAXZOOM, "made": int(time.time())}, f, ensure_ascii=False)
-        return {"tiles": n_tiles, "bytes": os.path.getsize(self.path), "build": build}
+        os.replace(tmp, path)
+        return {"tiles": n_tiles, "bytes": os.path.getsize(path), "build": build}
 
     @staticmethod
     def _write_chunk(item, out, newoff, pos, done):
@@ -767,17 +946,23 @@ def make_handler(app):
                 return self._json(app.offline.status())
             if route == "map" and self.command == "POST":
                 b = self._body(limit=64 * 1024)
-                ok = app.offline.start(b.get("regions") if isinstance(b.get("regions"), list) else None)
-                return self._json({"ok": ok, "regions": list(OfflineMap.REGIONS)})
-            if route == "mapbytes" and self.command == "GET":
+                if b.get("download"):
+                    return self._json({"ok": app.offline.start(str(b["download"]))})
+                if b.get("delete"):
+                    return self._json({"ok": app.offline.delete(str(b["delete"]))})
+                if b.get("cancel"):
+                    app.offline.stop()
+                    return self._json({"ok": True})
+                raise HttpError(400, "Неверный запрос")
+            if route == "mapupload" and self.command == "POST":
+                # файл карты с этого компьютера: тело запроса — сам файл
                 q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
                 try:
-                    o, n = int(q["o"][0]), int(q["l"][0])
-                except Exception:
-                    raise HttpError(400, "Неверный запрос")
-                if o < 0 or not (0 < n <= 16 * 1024 * 1024) or not app.offline.info()["present"]:
-                    raise HttpError(404, "Офлайн-карты нет")
-                return self._send(200, app.offline.read(o, n), "application/octet-stream", {"Cache-Control": "no-store"})
+                    slug = app.offline.upload((q.get("name") or ["karta"])[0], self.rfile, int(self.headers.get("Content-Length") or 0))
+                except ValueError as e:
+                    self.close_connection = True
+                    raise HttpError(400, str(e))
+                return self._json({"ok": True, "slug": slug})
             if route == "info":
                 return self._json({"app": "karta-seti", "version": VERSION})
             if route == "quit" and self.command == "POST" and self.headers.get("X-Karta") == "quit":
@@ -790,6 +975,17 @@ def make_handler(app):
 
         def _static(self, path):
             rel = path.lstrip("/") or "index.html"
+            m = re.match(r"^omap/(\d+)/(\d+)/(\d+)\.mvt$", rel)
+            if m:
+                # плитка офлайн-карты района; нет такой — пустой ответ (за границей района карта пустая)
+                got = app.offline.tile(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+                if got is None:
+                    return self._send(204, b"", "application/x-protobuf", {"Cache-Control": "no-cache"})
+                return self._send(200, got[0], "application/x-protobuf",
+                                  {"Cache-Control": "no-cache", "Content-Encoding": "gzip"} if got[1] else {"Cache-Control": "no-cache"})
+            if rel.startswith("vendor/fonts/") and rel.endswith(".pbf") and not os.path.isfile(os.path.join(WEB, rel)):
+                # букв этого диапазона в наборе нет — пустой ответ, иначе подписи на плитке не рисуются
+                return self._send(200, b"", "application/x-protobuf", {"Cache-Control": "max-age=86400"})
             m = re.match(r"^tc/([a-z]+)/(\d+)/(\d+)/(\d+)$", rel)
             if m:
                 got = app.tilecache.get(m.group(1), int(m.group(2)), int(m.group(3)), int(m.group(4)))
@@ -821,7 +1017,7 @@ def make_handler(app):
                 body = html.encode("utf-8")
             if ctype.startswith("text/") or ctype in ("application/json", "text/javascript"):
                 ctype += "; charset=utf-8"
-            cache = "max-age=86400" if rel.startswith(("tiles/", "leaflet/")) else "no-cache"
+            cache = "max-age=86400" if rel.startswith(("tiles/", "leaflet/", "vendor/fonts/")) else "no-cache"
             self._send(200, body, ctype, {"Cache-Control": cache})
 
     return Handler
@@ -842,7 +1038,7 @@ class App:
         self.tilecache = TileCache(data_dir, self.state)
         self.quit = None
         self.log = log
-        self.offline = OfflineMap(os.path.join(ROOT, "map", "karta-offline.pmtiles"), log)
+        self.offline = OfflineMap(os.environ.get("KARTA_MAP_DIR") or os.path.join(ROOT, "map"), log)
         try:
             self.dem = Dem(os.path.join(WEB, "dem", "dem.bin"))
         except Exception as e:
@@ -989,18 +1185,23 @@ def main():
     ap.add_argument("--port", type=int, default=PORT)
     ap.add_argument("--data", help="папка с данными")
     ap.add_argument("--no-window", action="store_true")
-    ap.add_argument("--offline-map", nargs="*", metavar="РАЙОН",
-                    help="скачать офлайн-карту районов в map/karta-offline.pmtiles и выйти")
+    ap.add_argument("--offline-map", nargs="+", metavar="РАЙОН",
+                    help="вырезать офлайн-карту районов (%s) в файл --map-file и выйти" % ", ".join(OfflineMap.REGIONS))
     ap.add_argument("--map-file", help="куда сохранить офлайн-карту (для --offline-map)")
     args = ap.parse_args()
     if args.offline_map is not None:
-        om = OfflineMap(os.path.abspath(args.map_file or os.path.join(ROOT, "map", "karta-offline.pmtiles")))
+        bad = [r for r in args.offline_map if r not in OfflineMap.REGIONS]
+        if bad:
+            print("Нет такого района: %s. Есть: %s" % (", ".join(bad), ", ".join(OfflineMap.REGIONS)))
+            return 2
+        out = os.path.abspath(args.map_file or os.path.join(ROOT, "map", args.offline_map[0] + ".pmtiles"))
+        om = OfflineMap(os.path.dirname(out))
         last = [0]
         def show(text, done, total):
             if time.time() - last[0] > 3 or done == total:
                 last[0] = time.time()
                 print("  %s %s" % (text, "%d из %d МБ" % (done >> 20, total >> 20) if total else ""), flush=True)
-        r = om.download(args.offline_map or OfflineMap.DEFAULT, progress=show)
+        r = om.extract(args.offline_map, out, progress=show)
         print("Готово: %(tiles)d плиток, %(bytes)d байт, сборка %(build)s" % r)
         return 0
 

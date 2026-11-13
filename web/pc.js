@@ -14,7 +14,7 @@
   'use strict';
 
   window.KartaPC = true;
-  var EXPECTED = '3.1';   // версия run.py, для которой написана эта страница
+  var EXPECTED = '3.2';   // версия run.py, для которой написана эта страница
   var OWN = /^(wf_|karta_)/;
 
   function request(method, url, body) {

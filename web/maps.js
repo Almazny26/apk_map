@@ -9,11 +9,14 @@
  *   - выбранная подложка запоминается (karta_map);
  *   - при первом запуске новой версии включается «Онлайн» (заказчик: «пусть карта прогружается
  *     из сети»); выключить можно той же галочкой;
- *   - внизу справа подпись источника карты (условие OpenStreetMap и Esri);
- *   - офлайн-карта районов (3.0): файл karta-offline.pmtiles — векторные плитки OpenStreetMap
- *     (Protomaps) до масштаба 15, страница рисует их сама до 19. Есть файл — он лежит под всеми
- *     подложками (вместо вшитой карты 7–11), а без интернета «Схема» рисуется только из него.
- *     Телефон отдаёт куски файла через KartaFiles.mapBytes, компьютер — через /api/mapbytes.
+ *   - подписи источников на карте нет (заказчик убрал), источники перечислены в настройках
+ *     (KartaMap.credits);
+ *   - офлайн-карта районов (3.2): файлы PMTiles (векторные плитки OpenStreetMap, Protomaps, 0–15)
+ *     рисует MapLibre GL через видеокарту — слой L.maplibreGL под остальными подложками. Плитки и
+ *     шрифты подписей: на телефоне — прямо из оболочки (KartaFiles.mapTile / asset, свой
+ *     «протокол» karta://, без сети), на компьютере — /omap/z/x/y.mvt и /vendor/fonts/.
+ *     Внутри района «Схема» рисуется из файла сразу, интернет для неё не нужен; за границей
+ *     района — OpenStreetMap из интернета (если включён) или вшитая карта 7–11.
  */
 (function () {
   'use strict';
@@ -49,14 +52,13 @@
 
   var css = document.createElement('style');
   css.textContent =
-    // у приложения рамка у всех canvas (для графика профиля) — у плиток офлайн-карты она давала сетку
+    // у приложения рамка у всех canvas (для графика профиля) — у холста карты она не нужна
     '.leaflet-tile-pane canvas{border:0!important;border-radius:0!important;background:none!important;padding:0!important;margin:0!important}' +
-    '.leaflet-container .leaflet-control-attribution.nm-attr{display:block!important;font-size:10px;background:rgba(255,255,255,.75);padding:0 4px}' +
-    'body.dark .leaflet-container .leaflet-control-attribution.nm-attr{background:rgba(0,0,0,.55);color:#ccc}' +
-    'body.dark .leaflet-container .leaflet-control-attribution.nm-attr a{color:#9ecbff}';
+    '.leaflet-gl-layer{position:absolute;left:0;top:0;z-index:2}';
   document.head.appendChild(css);
-  var attr = L.control.attribution({ prefix: false, position: 'bottomright' }).addTo(map);
-  L.DomUtil.addClass(attr.getContainer(), 'nm-attr');
+  var link = document.createElement('link');
+  link.rel = 'stylesheet'; link.href = 'vendor/maplibre-gl.css';
+  document.head.appendChild(link);
 
   // ---------------------------------------------------------------- плитки не пришли — показать крупнее
 
@@ -86,6 +88,7 @@
     };
   }
   [osm, sat, hybSat].forEach(fallback);
+  offlineTiles.setZIndex(0); osm.setZIndex(1); sat.setZIndex(3); hybSat.setZIndex(3); hybNames.setZIndex(4);   // офлайн-карта районов — 2
 
   // ---------------------------------------------------------------- «Онлайн» по умолчанию
 
@@ -95,120 +98,127 @@
   }
 
 
-  // ---------------------------------------------------------------- офлайн-карта районов (векторная)
+  // ---------------------------------------------------------------- офлайн-карта районов (MapLibre GL)
 
-  var vec = null, vecInfo = { present: false };
+  var kf = window.KartaFiles, bridge = !!(kf && kf.mapTile);
+  var gl = null, info = { files: [] }, key = '', schema = 'auto', glOk = null;
+  function webgl() {
+    if (glOk == null) {
+      try {
+        var c = document.createElement('canvas');
+        glOk = !!(window.maplibregl && L.maplibreGL && window.KartaStyle && (c.getContext('webgl2') || c.getContext('webgl')));
+      } catch (e) { glOk = false; }
+    }
+    return glOk;
+  }
   function b64(s) {
     var bin = atob(s), u = new Uint8Array(bin.length);
     for (var i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
     return u.buffer;
   }
-  function makeSource(key) {
-    var kf = window.KartaFiles;
-    if (kf && kf.mapBytes) return {
-      getKey: function () { return key; },
-      getBytes: function (o, l) {
-        var s = kf.mapBytes(o, l);
-        return s == null || s === '' ? Promise.reject(new Error('нет данных')) : Promise.resolve({ data: b64(s) });
-      }
-    };
-    return {
-      getKey: function () { return key; },
-      getBytes: function (o, l, signal) {
-        return fetch('/api/mapbytes?o=' + o + '&l=' + l, { signal: signal }).then(function (r) {
-          if (!r.ok) throw new Error('нет данных');
-          return r.arrayBuffer();
-        }).then(function (d) { return { data: d }; });
-      }
-    };
-  }
-  function vecLayer(info) {
-    if (!window.protomapsL) return null;
-    var src = new protomapsL.PmtilesSource('karta-offline.pmtiles', true);
-    src.p.source = makeSource('karta-offline-' + info.size + '-' + (info.mtime || 0));
-    var dark = document.body.classList.contains('dark');
-    var bg = dark ? '#1f1f1f' : '#e2dfda';   // фон плитки — цвет суши (море рисуется поверх)
-    var l = protomapsL.leafletLayer({ url: src.p, flavor: dark ? 'dark' : 'light', lang: 'ru', maxDataZoom: 15, minZoom: 3, maxZoom: 19,
-      attribution: '&copy; участники OpenStreetMap' });
-    l.backgroundColor = bg;
-    l.options.className = 'karta-vec';   // в тёмной теме карта уже тёмная — приглушать её не надо
-    l.setZIndex && l.setZIndex(0);
-    return l;
-  }
-  function readInfo(cb) {
-    var kf = window.KartaFiles;
-    if (kf && kf.mapSize) {
-      var size = +kf.mapSize() || 0;
-      cb(size > 0 ? { present: true, size: size, mtime: +(kf.mapDate ? kf.mapDate() : 0) || 0 } : { present: false });
-      return;
-    }
-    if (window.KartaPC) {
-      fetch('/api/map').then(function (r) { return r.json(); }).then(cb, function () { cb({ present: false }); });
-      return;
-    }
-    cb({ present: false });
-  }
-  function loadVec(then) {
-    readInfo(function (info) {
-      var same = vec && vecInfo.present && info.present && info.size === vecInfo.size && info.mtime === vecInfo.mtime;
-      vecInfo = info;
-      if (!same) {
-        if (vec && map.hasLayer(vec)) map.removeLayer(vec);
-        vec = info.present ? vecLayer(info) : null;
-      }
-      useMap(current);
-      if (then) then(info);
+  // телефон: плитки и шрифты берутся прямо из оболочки, без сети
+  if (bridge && window.maplibregl) {
+    maplibregl.addProtocol('karta', function (params) {
+      var s = '', m = /^karta:\/\/t\/(\d+)\/(\d+)\/(\d+)/.exec(params.url);
+      try {
+        if (m) s = kf.mapTile(+m[1], +m[2], +m[3]);
+        else if ((m = /^karta:\/\/f\/(.+)\/(\d+-\d+)$/.exec(params.url))) s = kf.asset('vendor/fonts/' + decodeURIComponent(m[1]) + '/' + m[2] + '.pbf');
+      } catch (e) { s = ''; }
+      return Promise.resolve({ data: s ? b64(s) : new ArrayBuffer(0) });
     });
   }
-  /* нет связи: галочка «Онлайн» снята или телефон/компьютер сообщает, что сети нет */
-  function noNet() { return !online || navigator.onLine === false; }
-  window.addEventListener('online', function () { useMap(current); });
-  window.addEventListener('offline', function () { useMap(current); });
-  window.KartaMap = { info: function () { return vecInfo; }, reload: loadVec,
+  function style() {
+    var s = JSON.parse(JSON.stringify(window.KartaStyle[document.body.classList.contains('dark') ? 'dark' : 'light']));
+    s.glyphs = bridge ? 'karta://f/{fontstack}/{range}' : location.origin + '/vendor/fonts/{fontstack}/{range}.pbf';
+    s.sources.p.tiles = [bridge ? 'karta://t/{z}/{x}/{y}?' + key : location.origin + '/omap/{z}/{x}/{y}.mvt?v=' + key];
+    return s;
+  }
+  function readInfo(cb) {
+    if (kf && kf.mapList) {
+      var files = [];
+      try { files = JSON.parse(kf.mapList()) || []; } catch (e) { files = []; }
+      cb({ files: files });
+    } else if (window.KartaPC) {
+      fetch('/api/map').then(function (r) { return r.json(); }).then(function (st) { cb({ files: st.files || [] }); }, function () { cb({ files: [] }); });
+    } else cb({ files: [] });
+  }
+  function loadVec(then) {
+    readInfo(function (i) {
+      var k = i.files.map(function (f) { return f.slug + '.' + f.size + '.' + f.mtime; }).join('_').replace(/[^0-9A-Za-z_.]/g, '');
+      info = i;
+      if (k !== key || (!gl && i.files.length)) {
+        key = k;
+        if (gl && map.hasLayer(gl)) map.removeLayer(gl);
+        gl = null;
+        if (i.files.length && webgl()) {
+          try {
+            gl = L.maplibreGL({ style: style(), padding: 0.12, interactive: false, fadeDuration: 0, validateStyle: false,
+              pixelRatio: Math.min(window.devicePixelRatio || 1, 2), maxZoom: 22, renderWorldCopies: false });
+          } catch (e) { gl = null; }
+        }
+      }
+      sync();
+      if (then) then(i);
+    });
+  }
+  /* центр экрана внутри района, для которого есть офлайн-карта */
+  function covered() {
+    if (!gl || map.getZoom() < 7) return false;
+    var c = map.getCenter();
+    return info.files.some(function (f) { var b = f.bounds || []; return c.lng >= b[0] && c.lng <= b[2] && c.lat >= b[1] && c.lat <= b[3]; });
+  }
+  function put(l, on, watch) {
+    if (!l) return;
+    var has = map.hasLayer(l);
+    if (on && !has) { l.addTo(map); if (watch && typeof watchTiles === 'function') watchTiles(l); }
+    else if (!on && has) map.removeLayer(l);
+  }
+  /* какие слои должны быть на карте сейчас */
+  function sync() {
+    var cov = covered(), sch = current === 'off';
+    // вшитая карта 7–11 — в самом низу «Схемы»: видна там, где нет ничего лучше
+    put(offlineTiles, sch);
+    // интернет — где районов офлайн-карты нет (или так выбрано в настройках)
+    put(osm, sch && online && !(cov && schema !== 'online'), true);
+    // офлайн-карта районов: поверх схемы внутри района (или когда интернета нет), под снимками — всегда
+    put(gl, !!gl && (sch ? (cov || !online) && !(online && schema === 'online') : true));
+    put(sat, current === 'sat', true);
+    put(hybrid, current === 'hyb', true);
+  }
+  map.on('moveend zoomend', sync);
+
+  window.KartaMap = {
+    info: function () { return { files: info.files, gl: webgl(), drawn: !!gl }; },
+    reload: loadVec,
+    note: function () {},                       // app.js подставляет всплывающее сообщение
+    credits: 'Карты: © участники OpenStreetMap (офлайн-карта — сборка Protomaps), снимки © Esri, подписи на снимках © Яндекс.',
+    setSchema: function (v) { schema = v === 'online' ? 'online' : 'auto'; sync(); },
     // тема сменилась — офлайн-карта перерисовывается в светлых или тёмных цветах
     retheme: function () {
-      if (!vec) return;
-      if (map.hasLayer(vec)) map.removeLayer(vec);
-      vec = vecLayer(vecInfo);
-      useMap(current);
-    } };
+      try { if (gl && gl.getMaplibreMap()) gl.getMaplibreMap().setStyle(style()); } catch (e) { /* слой ещё не на карте */ }
+    }
+  };
 
   // ---------------------------------------------------------------- выбор подложки
 
   $('mapOff').textContent = 'Схема';
-  var current = localStorage.getItem(KIND) || 'off', busy = false;
+  var current = localStorage.getItem(KIND) || 'off';
 
   window.useMap = function (kind) {
-    if (busy) return;
-    busy = true;
-    try {
-      current = kind === 'sat' || kind === 'hyb' ? kind : 'off';
-      if (current !== 'off' && !online) { $('online').checked = true; applyOnline(true); }
-      [osm, sat, hybrid].forEach(function (l) { if (map.hasLayer(l)) map.removeLayer(l); });
-      // подложка: офлайн-карта районов, если файл есть; иначе вшитая схема 7–11 (только под «Схемой»:
-      // под снимками она давала лоскуты)
-      var under = vec || (current === 'off' ? offlineTiles : null);
-      [offlineTiles, vec].forEach(function (l) { if (l && l !== under && map.hasLayer(l)) map.removeLayer(l); });
-      if (under && !map.hasLayer(under)) under.addTo(map);
-      // без связи «Схема» рисуется только из файла — без лоскутов из запаса
-      var layer = current === 'sat' ? sat : current === 'hyb' ? hybrid : (online && !(vec && noNet()) ? osm : null);
-      if (layer) { layer.addTo(map); if (typeof watchTiles === 'function') watchTiles(layer); }
-      $('mapOff').classList.toggle('on', current === 'off');
-      $('mapSat').classList.toggle('on', current === 'sat');
-      $('mapHyb').classList.toggle('on', current === 'hyb');
-      try { localStorage.setItem(KIND, current); } catch (e) { /* не важно */ }
-      if (current === 'sat') status('Спутник. Нужен интернет, открытое ранее видно и без него.');
-      else if (current === 'hyb') status('Гибрид: снимок и подписи. Нужен интернет, открытое ранее видно и без него.');
-      else if (online) status('Схема: подробная карта из интернета. Открытое ранее видно и без связи.');
-      else status(vec ? 'Без интернета: офлайн-карта районов.' : 'Без интернета: офлайн-карта (Крым, Херсон, Запорожье, Ставрополье) и то, что открывали раньше.');
-    } finally { busy = false; }
+    current = kind === 'sat' || kind === 'hyb' ? kind : 'off';
+    sync();
+    $('mapOff').classList.toggle('on', current === 'off');
+    $('mapSat').classList.toggle('on', current === 'sat');
+    $('mapHyb').classList.toggle('on', current === 'hyb');
+    try { localStorage.setItem(KIND, current); } catch (e) { /* не важно */ }
+    if (current !== 'off' && !online) window.KartaMap.note('Интернет для карты выключен: снимки видны только там, где их уже открывали');
   };
 
-  // галочка «Онлайн» сразу меняет подложку
+  // выключатель «Карта из интернета» сразу меняет подложку
   var applyOrig = window.applyOnline;
   window.applyOnline = function (on) {
     var r = applyOrig.apply(this, arguments);
-    if (!busy) useMap(current);
+    sync();
     return r;
   };
 

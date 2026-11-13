@@ -1,0 +1,42 @@
+name: Офлайн-карты районов
+
+# Вырезает районы из сборки Protomaps (данные OpenStreetMap) и кладёт файлы в выпуск «maps».
+# Оттуда их скачивают приложение на телефоне и программа на компьютере («Карта без интернета»).
+# Запуск: вручную, раз в месяц, или при изменении этого файла.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 3 1 * *'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-maps.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: maps
+  cancel-in-progress: true
+
+jobs:
+  maps:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Вырезать районы
+        run: |
+          mkdir -p out
+          for r in kherson zaporozhye crimea; do
+            python3 run.py --offline-map "$r" --map-file "out/$r.pmtiles"
+          done
+          ls -la out
+      - name: Выложить в выпуск «maps»
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view maps >/dev/null 2>&1 || gh release create maps --title "Офлайн-карты районов" \
+            --notes "Файлы офлайн-карты для «Карты сети»: Херсонская и Запорожская области, Крым. Данные © участники OpenStreetMap (ODbL), сборка Protomaps. Обновляются автоматически."
+          gh release upload maps out/*.pmtiles --clobber
