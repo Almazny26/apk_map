@@ -37,7 +37,7 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 WEB = os.path.join(ROOT, "web")
 HOST = "127.0.0.1"
 PORT = 8790
-VERSION = "2.3"
+VERSION = "2.8"
 
 mimetypes.add_type("text/javascript", ".js")
 mimetypes.add_type("application/json", ".json")
@@ -258,6 +258,9 @@ class TileCache:
         try:
             if data is None or len(data) < 60 or self.kind(data) is None:
                 raise ValueError("не картинка")
+            if src == "sat" and len(data) == 2521 and hashlib.md5(data).hexdigest() == self.ESRI_EMPTY:
+                open(path + ".none", "wb").close()
+                return (cached, self.kind(cached)) if cached else None
             os.makedirs(os.path.dirname(path), exist_ok=True)
             tmp = path + ".%d.tmp" % threading.get_ident()
             with open(tmp, "wb") as f:
@@ -410,6 +413,12 @@ def make_handler(app):
                 return self._json(fetch_elevations(app.dem, str(b.get("locs") or ""), bool(b.get("online"))))
             if route == "info":
                 return self._json({"app": "karta-seti", "version": VERSION})
+            if route == "quit" and self.command == "POST" and self.headers.get("X-Karta") == "quit":
+                # новая версия программы просит старую уступить место (только с этого компьютера)
+                self._json({"ok": True})
+                if app.quit:
+                    threading.Timer(0.3, app.quit).start()
+                return
             raise HttpError(404, "Нет такого адреса")
 
         def _static(self, path):
@@ -467,6 +476,7 @@ class App:
         self.state = State(data_dir)
         self.tiles = Tiles()
         self.tilecache = TileCache(data_dir, self.state)
+        self.quit = None
         self.log = log
         try:
             self.dem = Dem(os.path.join(WEB, "dem", "dem.bin"))
@@ -508,6 +518,62 @@ def backup_loop(data_dir, log, keep=30):
         except Exception as e:
             log("Не удалось сделать резервную копию: %s" % e)
         time.sleep(3600)
+
+
+def replace_old(port):
+    """Порт занят. Если это наша программа другой версии (например, старое окно свёрнуто и забыто),
+    закрыть её, чтобы работала новая. → True, если порт освободился."""
+    base = "http://%s:%d" % (HOST, port)
+    try:
+        with urllib.request.urlopen(base + "/api/info", timeout=3) as r:
+            info = json.loads(r.read().decode("utf-8"))
+    except Exception:
+        return False
+    if info.get("app") != "karta-seti" or info.get("version") == VERSION:
+        return False
+    print("  Работает прежняя версия программы (%s) — закрываю её." % info.get("version"))
+    try:   # версии 2.8 и новее закрываются сами по просьбе
+        req = urllib.request.Request(base + "/api/quit", data=b"{}", method="POST",
+                                     headers={"X-Karta": "quit", "Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=3).read()
+    except Exception:
+        pass
+    for _ in range(10):
+        time.sleep(0.5)
+        if port_free(port):
+            return True
+    if os.name == "nt":   # более старые — завершить процесс, который держит порт (только Python)
+        try:
+            out = subprocess.run(["netstat", "-ano", "-p", "TCP"], capture_output=True, text=True, timeout=15).stdout
+            for line in out.splitlines():
+                parts = line.split()
+                if len(parts) >= 5 and parts[1].endswith(":%d" % port) and parts[3].upper() == "LISTENING":
+                    pid = parts[4]
+                    name = subprocess.run(["tasklist", "/FI", "PID eq %s" % pid, "/FO", "CSV", "/NH"],
+                                          capture_output=True, text=True, timeout=15).stdout.lower()
+                    if "python" in name or "py.exe" in name:
+                        subprocess.run(["taskkill", "/PID", pid, "/F"], capture_output=True, timeout=15)
+        except Exception:
+            pass
+        for _ in range(10):
+            time.sleep(0.5)
+            if port_free(port):
+                return True
+    return False
+
+
+def port_free(port):
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    if os.name != "nt":   # как у самого сервера: старые соединения в TIME_WAIT не мешают
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        s.bind((HOST, port))
+        return True
+    except OSError:
+        return False
+    finally:
+        s.close()
 
 
 def make_shortcut(data_dir, log):
@@ -564,14 +630,22 @@ def main():
     os.makedirs(data_dir, exist_ok=True)
     log = Log(os.path.join(data_dir, "program.log"))
     url = "http://%s:%d/" % (HOST, args.port)
+    the_app = App(data_dir, log)
     try:
-        the_app = App(data_dir, log)
         server = Server((HOST, args.port), make_handler(the_app))
     except OSError:
-        print("Программа уже запущена, открываю её окно.")
-        if not args.no_window:
-            open_window(url)
-        return 0
+        server = None
+        if replace_old(args.port):
+            try:
+                server = Server((HOST, args.port), make_handler(the_app))
+            except OSError:
+                server = None
+        if server is None:
+            print("Программа уже запущена, открываю её окно.")
+            if not args.no_window:
+                open_window(url)
+            return 0
+    the_app.quit = server.shutdown
     threading.Thread(target=backup_loop, args=(data_dir, log), daemon=True).start()
     threading.Thread(target=the_app.tilecache.prune, daemon=True).start()
     if not args.no_window:

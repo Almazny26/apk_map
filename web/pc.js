@@ -14,6 +14,7 @@
   'use strict';
 
   window.KartaPC = true;
+  var EXPECTED = '2.8';   // версия run.py, для которой написана эта страница
   var OWN = /^(wf_|karta_)/;
 
   function request(method, url, body) {
@@ -63,9 +64,10 @@
   // плитки в data\tilecache и показывает их без интернета; в интернет ходит только при «Онлайн»
   var REWRITE = [
     [/^https:\/\/local\.tiles\//, '/'],
-    [/^https:\/\/tile\.openstreetmap\.org\/.*/, '/tc/osm/{z}/{x}/{y}'],
-    [/^https:\/\/server\.arcgisonline\.com\/ArcGIS\/rest\/services\/World_Imagery\/.*/, '/tc/sat/{z}/{x}/{y}'],
-    [/^https:\/\/core-renderer-tiles\.maps\.yandex\.net\/tiles\?l=skl.*/, '/tc/skl/{z}/{x}/{y}']
+    // ?v= — чтобы браузер не показывал плитки, запомненные прежней версией (заглушки Esri)
+    [/^https:\/\/tile\.openstreetmap\.org\/.*/, '/tc/osm/{z}/{x}/{y}?v=' + EXPECTED],
+    [/^https:\/\/server\.arcgisonline\.com\/ArcGIS\/rest\/services\/World_Imagery\/.*/, '/tc/sat/{z}/{x}/{y}?v=' + EXPECTED],
+    [/^https:\/\/core-renderer-tiles\.maps\.yandex\.net\/tiles\?l=skl.*/, '/tc/skl/{z}/{x}/{y}?v=' + EXPECTED]
   ];
   if (window.L && L.tileLayer) {
     var tileLayer = L.tileLayer;
@@ -92,6 +94,22 @@
       return window.__kartaTileUrl(getTileUrl.call(this, coords), coords.x, coords.y);
     };
   }
+
+  // ---------------------------------------------------------------- версия программы
+  // Страница новая, а программа (чёрное окно, может быть свёрнуто) — старая: подсказать перезапуск.
+  try {
+    var info = JSON.parse(request('GET', '/api/info').responseText);
+    if (info.version !== EXPECTED) {
+      document.addEventListener('DOMContentLoaded', function () {
+        var b = document.createElement('div');
+        b.style.cssText = 'position:fixed;left:50%;top:56px;transform:translateX(-50%);z-index:200000;max-width:640px;' +
+          'background:#b3261e;color:#fff;border-radius:12px;padding:10px 16px;font:14px/1.4 system-ui,sans-serif;box-shadow:0 6px 24px rgba(0,0,0,.3)';
+        b.textContent = 'Работает прежняя версия программы (' + info.version + '). Закройте её чёрное окно (оно может быть ' +
+          'свёрнуто на панели задач) и запустите «Карта сети» заново.';
+        document.body.appendChild(b);
+      });
+    }
+  } catch (e) { /* не важно */ }
 
   // ---------------------------------------------------------------- замена оболочки Android
 

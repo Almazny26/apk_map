@@ -196,6 +196,11 @@
     '#nmBar span{flex:1;min-width:0}',
     '#nmBar small{display:block;color:var(--muted);font-size:12px;margin-top:2px}',
     '#nmBar button{flex:0 0 auto;padding:8px 12px;font-size:14px}',
+    '.nm-tbl{width:100%;border-collapse:collapse;font-size:13px;margin:4px 0}',
+    '.nm-tbl td{padding:6px 4px;border-bottom:1px solid var(--line);vertical-align:top}',
+    '.nm-tbl td:first-child{color:var(--muted);width:42%}',
+    '.nm-pts td:first-child{color:var(--text)}',
+    '.nm-sec{font-size:12px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:var(--muted);margin:14px 0 4px}',
     '.nm-fit a{font:700 18px/30px sans-serif!important;text-align:center;cursor:pointer}',
     '.nm-mid{width:14px;height:14px;border-radius:50%;background:#fff;border:2px solid #ef6c00;box-sizing:border-box;' +
       'color:#ef6c00;font:700 11px/10px sans-serif;text-align:center;opacity:.85;box-shadow:0 1px 3px rgba(0,0,0,.4)}',
@@ -306,6 +311,7 @@
   }
 
   function hiddenNow(id) {
+    if (viewMode) return false;   // в просмотре всё берётся из сети, редактор скрыт
     var cur = curGet();
     return cur.radio === id || cur.fiber === id;
   }
@@ -316,6 +322,7 @@
   var ghost = L.layerGroup().addTo(map);
   function drawGhost() {
     ghost.clearLayers();
+    if (viewMode) return;
     var fiber = typeof fiberMode !== 'undefined' && fiberMode, cur = curGet(), name;
     if (fiber && points.length) {
       name = get(cur.radio) ? get(cur.radio).f.name : 'Радиолиния (не сохранена)';
@@ -364,7 +371,17 @@
           g.addLayer(L.circleMarker([p.lat, p.lng], { radius: 4, color: '#fff', weight: 2, fillColor: '#bf360c', fillOpacity: 1, interactive: false }));
         });
       }
-      g.eachLayer(function (l) { if (l.options.interactive !== false) l.bindPopup(function () { return card(o.id); }); });
+      g.eachLayer(function (l) {
+        if (l.options.interactive === false) return;
+        l.bindPopup(function () { return card(o.id); });
+        if (viewMode) {
+          // в просмотре: название при наведении, линия выделяется
+          l.bindTooltip(esc(o.f.name || '') + ' · ' + km(o.f.dist), { sticky: true });
+          var w = l.options.weight;
+          l.on('mouseover', function () { l.setStyle({ weight: w + 3 }); });
+          l.on('mouseout', function () { l.setStyle({ weight: w }); });
+        }
+      });
       var mid = pts[Math.floor((pts.length - 1) / 2)], nxt = pts[Math.floor((pts.length - 1) / 2) + 1] || mid;
       if (o.f.name) g.addLayer(L.marker([(mid.lat + nxt.lat) / 2, (mid.lng + nxt.lng) / 2], {
         interactive: false, keyboard: false,
@@ -374,7 +391,8 @@
       drawn[o.id] = g;
     });
     objs.filter(function (o) { return o.type === 'node' && isFinite(o.f.lat) && isFinite(o.f.lng); }).forEach(function (o) {
-      var m = L.marker([o.f.lat, o.f.lng], { icon: nodeIcon(o), draggable: netOn && !drawing(), zIndexOffset: 500 });
+      var m = L.marker([o.f.lat, o.f.lng], { icon: nodeIcon(o), draggable: netOn && !drawing() && !viewMode, zIndexOffset: 500 });
+      if (viewMode) m.bindTooltip(esc(o.f.name || '') + (o.f.kind ? ' · ' + esc(o.f.kind) : ''), { direction: 'top', offset: [0, -10] });
       if (drawing()) m.on('click', function () { nodeTap(o.id); });
       else m.bindPopup(function () { return card(o.id); });
       m.on('dragend', function () {
@@ -430,6 +448,17 @@
       b.type = 'button'; b.textContent = text; if (cls) b.className = cls;
       b.onclick = function () { map.closePopup(); fn(); };
       row.appendChild(b);
+    }
+    if (viewMode) {
+      // режим просмотра: только посмотреть
+      if (o.type === 'node' && linesAt(o.id).length) {
+        var ln = document.createElement('div');
+        ln.className = 'nm-sub';
+        ln.textContent = 'Линий: ' + linesAt(o.id).length;
+        el.insertBefore(ln, row);
+      }
+      btn('Подробнее', '', function () { details(o.id); });
+      return el;
     }
     if (o.type === 'node') {
       var linked = linesAt(o.id);
@@ -1216,13 +1245,93 @@
 
   // ================================================================== для exchange.js
 
+  // ================================================================== режим просмотра
+  /* Только смотреть: окна правки скрыты, линии и узлы не двигаются, нажатие — сведения об объекте.
+   * Включается кнопкой «Просмотр» в шапке (ui.js), Esc — выйти. */
+  var viewMode = false;
+  function setViewMode(on) {
+    on = !!on;
+    if (on === viewMode) return;
+    if (route) stopRoute();
+    if (pick) cancelPick();
+    arm(false);
+    viewMode = on;
+    if (on) {
+      markers.forEach(function (m) { map.removeLayer(m); });
+      if (line) map.removeLayer(line);
+      nodeMarkers.forEach(function (m) { map.removeLayer(m); });
+      if (nodeLine) map.removeLayer(nodeLine);
+      clearMids();
+      map.closePopup();
+      say('Режим просмотра: нажмите на линию или узел, чтобы посмотреть сведения');
+    } else {
+      setTool(typeof fiberMode !== 'undefined' && fiberMode ? 'fiber' : 'radio');
+      say('');
+    }
+    refresh();
+  }
+
+  function row2(k, v) { return v === '' || v == null ? '' : '<tr><td>' + esc(k) + '</td><td>' + v + '</td></tr>'; }
+  function nodeName(nid) { var n = nid && get(nid); return n ? esc(n.f.name) : ''; }
+  function details(id) {
+    var o = get(id);
+    if (!o) return;
+    var f = o.f, html = '<h3>' + esc(f.name || 'без названия') + '</h3><table class="nm-tbl">';
+    if (o.type === 'node') {
+      var sk = toSK42(f.lat, f.lng);
+      html += row2('Вид', esc(f.kind || '')) +
+        row2('Состояние', '<span class="nm-st" style="background:' + (STATES[f.state] || '#455a64') + '">' + esc(f.state || '') + '</span>') +
+        row2('Адрес', esc(f.addr || '')) + row2('Координаты', (+f.lat).toFixed(6) + ', ' + (+f.lng).toFixed(6)) +
+        row2('СК-42', 'X=' + sk.x + ' Y=' + sk.y) + row2('Примечание', esc(f.note || '')) + '</table>';
+      var ls = linesAt(o.id);
+      if (ls.length) html += '<div class="nm-sec">Линии</div>' + ls.map(function (l) {
+        return '<div class="pt nm-item" data-d="' + esc(l.id) + '"><b>' + esc(l.f.name || '') + '</b><br><span class="nm-muted">' +
+          TYPE_NAME[l.type] + ' · ' + km(l.f.dist) + '</span></div>';
+      }).join('');
+    } else {
+      var pts = (o.type === 'radio' ? f.points : f.fnodes) || [];
+      var a = pts[0], b = pts[pts.length - 1];
+      html += row2('Тип', o.type === 'radio' ? 'радиолиния' : 'линия ВОЛС') + row2('Длина', km(f.dist)) +
+        row2('Откуда', a && a.nid ? nodeName(a.nid) : '') + row2('Куда', b && b.nid ? nodeName(b.nid) : '');
+      if (o.type === 'radio') {
+        html += row2('Частота', esc(f.freq || '') + ' МГц') + row2('Оборудование', esc(f.deviceName || '')) +
+          row2('Расчёт', esc(RESULT[f.result] || RESULT.unknown));
+      } else {
+        var kinds = {};
+        pts.forEach(function (p) { kinds[p.kind] = (kinds[p.kind] || 0) + 1; });
+        html += row2('Точек', pts.length + ' (' + Object.keys(kinds).map(function (k) { return esc(k) + ' ' + kinds[k]; }).join(', ') + ')');
+      }
+      html += row2('Примечание', esc(f.note || '')) + '</table><div class="nm-sec">Точки</div><table class="nm-tbl nm-pts">' +
+        pts.map(function (p, i) {
+          var sk = toSK42(p.lat, p.lng);
+          var label = o.type === 'radio' ? letter(i) + ' · h ' + (p.height != null ? p.height + ' м' : '') : (i + 1) + '. ' + esc(p.kind || '');
+          var nm = p.nid && get(p.nid) ? get(p.nid).f.name : (p.name || '');
+          return '<tr><td>' + label + (nm ? '<br><b>' + esc(nm) + '</b>' : '') + '</td><td>X=' + sk.x + '<br>Y=' + sk.y + '</td></tr>';
+        }).join('') + '</table>';
+    }
+    html += '<p class="nm-muted">Изменено: ' + esc(o.by || '') + ', ' + when(o.t) + '</p>' +
+      '<div class="nm-row"><button type="button" id="nmShow">Показать на карте</button>' +
+      '<button type="button" class="secondary" id="nmCancel">Закрыть</button></div>';
+    dlgBox.innerHTML = html;
+    dlg.classList.add('show');
+    $('nmCancel').onclick = closeDlg;
+    $('nmShow').onclick = function () { closeDlg(); focus(o.id); };
+    dlgBox.querySelectorAll('[data-d]').forEach(function (e) { e.onclick = function () { details(e.getAttribute('data-d')); }; });
+  }
+
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && viewMode && !dlg.classList.contains('show')) { e.stopImmediatePropagation(); window.KartaView(false); }
+  });
+
   window.KartaNet = {
     data: function () { return copy(db); },
     counts: counts,
     preview: function (inc) { var t = copy(db); return mergeInto(t, inc); },
     valid: function (d) { return d == null || valid(d); },
     // объединение пишется в хранилище; страница после импорта перезагружается
-    merge: function (inc) { var r = mergeInto(db, inc); save(); return r; }
+    merge: function (inc) { var r = mergeInto(db, inc); save(); return r; },
+    setView: setViewMode,
+    isView: function () { return viewMode; }
   };
 
   // ================================================================== запуск

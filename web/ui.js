@@ -44,6 +44,15 @@
       'display:inline-flex;align-items:center;justify-content:center;font-size:20px!important;line-height:1}',
     '.ui-icon:hover{background:var(--bg)!important}',
     '#btnTheme,#btnHist,#btnFile{display:none!important}',
+    '.ui-viewbtn{display:inline-flex;align-items:center;gap:7px;background:var(--tonal)!important;color:var(--accent)!important;' +
+      'border-radius:999px!important;padding:7px 14px!important;min-height:36px;font-size:14px!important}',
+    '.ui-viewbtn.on{background:var(--accent)!important;color:#fff!important}',
+    'body.dark .ui-viewbtn.on{color:#0b1d36!important}',
+    '@media (max-width:520px){.ui-viewbtn span{display:none}.ui-viewbtn{padding:7px 9px!important}}',
+    'body.view .ui-seg,body.view #pcTool,body.view #pcProfile,body.view #pcText,body.view #sheet,body.view #nmBar,body.view #toggle{display:none!important}',
+    'body.view .leaflet-bottom{bottom:0!important}',
+    'body.view header::after{content:"Просмотр";font-size:12px;font-weight:700;color:var(--accent);background:var(--tonal);border-radius:999px;padding:3px 10px;order:1}',
+    'body.view .ui-right{order:2}',
     '@media (max-width:520px){.ui-brand span{display:none}.ui-seg button{padding:6px 11px!important}header{gap:6px}}',
 
     // меню «⋮»
@@ -191,7 +200,9 @@
     pc ? '.pcw-title button{color:var(--muted)!important;border-radius:8px!important;min-height:0}' : '',
     pc ? '.pcw-title button:hover{background:var(--bg)!important}' : '',
     pc ? '.pcw:not(.pcw-front) .pcw-title{filter:none!important;color:var(--muted)!important}' : '',
-    pc ? '#pcBar{background:var(--panel)!important}' : ''
+    pc ? '#pcBar{background:var(--panel)!important}' : '',
+    pc ? '#netDlg.pcw #netDlgBox,#hist.pcw #histBox,#kartaEx.pcw #kartaExBox{box-shadow:none!important;border-radius:0!important}' : '',
+    '#netDlg .x{display:none!important}'
   ].join('\n');
   document.head.appendChild(css);
 
@@ -208,6 +219,24 @@
   var right = spans[1];
   right.className = 'ui-right';
   header.insertBefore(seg, right);
+  // «Просмотр»: только смотреть карту и сведения о линиях и узлах
+  var viewBtn = el('button', 'ui-viewbtn');
+  viewBtn.type = 'button'; viewBtn.id = 'btnView'; viewBtn.title = 'Режим просмотра: только смотреть карту и сведения';
+  var EYE = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">' +
+    '<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>';
+  function viewLabel(on) { viewBtn.innerHTML = EYE + '<span>' + (on ? 'Выйти из просмотра' : 'Просмотр') + '</span>'; }
+  viewLabel(false);
+  right.appendChild(viewBtn);
+  window.KartaView = function (on) {
+    on = !!on;
+    document.body.classList.toggle('view', on);
+    viewLabel(on);
+    viewBtn.classList.toggle('on', on);
+    if (window.KartaNet && KartaNet.setView) KartaNet.setView(on);
+    setTimeout(function () { map.invalidateSize(); }, 50);
+  };
+  viewBtn.onclick = function () { window.KartaView(!document.body.classList.contains('view')); };
+
   var menuBtn = el('button', 'ui-icon', '&#8942;');
   menuBtn.type = 'button'; menuBtn.id = 'btnMenu'; menuBtn.title = 'Меню';
   right.appendChild(menuBtn);
