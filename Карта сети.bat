@@ -1,6 +1,6 @@
 @echo off
 chcp 65001 >nul
-title Карта сети - сервер
+title Карта сети
 cd /d "%~dp0"
 rem Ищем настоящий Python: сначала лаунчер py, потом python. Заглушка Microsoft Store проверку не проходит.
 set PY=
@@ -18,5 +18,5 @@ if not defined PY (
 )
 %PY% run.py %*
 echo.
-echo Сервер остановлен.
+echo Программа закрыта.
 pause

@@ -6,8 +6,8 @@
 <meta name="theme-color" content="#17324D">
 <title>Карта сети</title>
 <link rel="icon" href="icon.svg">
-<link rel="stylesheet" href="vendor/maplibre/maplibre-gl.css?v=1.2">
-<link rel="stylesheet" href="app.css?v=1.2">
+<link rel="stylesheet" href="vendor/maplibre/maplibre-gl.css?v=1.3">
+<link rel="stylesheet" href="app.css?v=1.3">
 </head>
 <body class="booting">
 
@@ -77,35 +77,20 @@
     <div id="drawertitle">Карта сети</div>
     <div id="drawersub"></div>
   </div>
+  <button data-act="show" data-view="send" class="phone-only accent">Отправить изменения</button>
+  <button data-act="show" data-view="loadmap" class="phone-only">Загрузить карту</button>
+  <button data-act="show" data-view="importch" class="desk-only accent">Загрузить изменения от бригад</button>
+  <button data-act="show" data-view="exportmap" class="desk-only">Выгрузить карту для бригад</button>
+  <hr>
   <button data-act="show" data-view="list">Узлы и линии</button>
   <button data-act="show" data-view="filters">Условные обозначения и фильтр</button>
   <button data-act="show" data-view="journal">Журнал изменений</button>
   <button data-act="show" data-view="offline" class="native-only">Карта без интернета</button>
-  <button data-act="show" data-view="users" class="admin-only">Пользователи</button>
-  <button data-act="show" data-view="types" class="admin-only">Виды узлов, линий и состояния</button>
-  <button data-act="show" data-view="exchange" class="web-only editor-only">Импорт и экспорт</button>
-  <button data-act="show" data-view="settings">Настройки и учётная запись</button>
+  <button data-act="show" data-view="types" class="desk-only">Виды узлов, линий и состояния</button>
+  <button data-act="show" data-view="exchange" class="desk-only">Таблицы: CSV и GeoJSON</button>
+  <button data-act="show" data-view="settings">Настройки</button>
 </nav>
 
-<section id="login" hidden>
-  <form id="loginform" autocomplete="on">
-    <svg class="logo" viewBox="0 0 108 108"><rect width="108" height="108" rx="24" fill="#17324D"/><path d="M36 68 54 38l20 24Z" fill="none" stroke="#7FD1FF" stroke-width="3.5" stroke-linejoin="round"/><circle cx="54" cy="38" r="8" fill="#fff"/><circle cx="36" cy="68" r="7" fill="#fff"/><circle cx="74" cy="62" r="7" fill="#FFB23E"/></svg>
-    <h1>Карта сети</h1>
-    <label id="serverrow">Адрес сервера
-      <input id="lgServer" type="url" inputmode="url" placeholder="http://адрес:8790" autocapitalize="off" autocomplete="off" spellcheck="false">
-    </label>
-    <label>Логин
-      <input id="lgLogin" type="text" autocapitalize="off" autocomplete="username" spellcheck="false" required>
-    </label>
-    <label>Пароль
-      <input id="lgPass" type="password" autocomplete="current-password" required>
-    </label>
-    <div id="lgError" class="error" hidden></div>
-    <button type="submit" class="btn primary" id="lgBtn">Войти</button>
-    <a id="lgApk" class="apk" hidden>Скачать приложение для Android</a>
-    <div class="ver" id="lgVer"></div>
-  </form>
-</section>
 
 <div id="hint" hidden>Карта пока пустая. Нажмите <b>+</b>, чтобы поставить первый узел.</div>
 
@@ -121,9 +106,9 @@
 
 <div id="toast" hidden></div>
 
-<script src="vendor/maplibre/maplibre-gl.js?v=1.2"></script>
-<script src="js/core.js?v=1.2"></script>
-<script src="js/mapview.js?v=1.2"></script>
-<script src="js/ui.js?v=1.2"></script>
+<script src="vendor/maplibre/maplibre-gl.js?v=1.3"></script>
+<script src="js/core.js?v=1.3"></script>
+<script src="js/mapview.js?v=1.3"></script>
+<script src="js/ui.js?v=1.3"></script>
 </body>
 </html>

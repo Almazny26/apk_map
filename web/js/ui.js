@@ -1,4 +1,4 @@
-/* Карта сети — интерфейс: карточки, формы, списки, режимы работы с картой, вход. */
+/* Карта сети — интерфейс: карточки, формы, списки, режимы работы с картой, обмен файлами. */
 (function () {
   'use strict';
 
@@ -8,13 +8,12 @@
 
   var hist = [];        // открытые друг за другом панели: [{view, arg}]
   var mode = null;      // текущий режим работы с картой или null
-  var apkInfo = null;   // сведения о свежем APK на сервере
+  var PHONE = NM.mode === 'phone';
 
   var FIELD_NAMES = {
     name: 'название', type: 'вид', status: 'состояние', address: 'адрес', note: 'примечание',
     lat: 'широта', lng: 'долгота', a: 'узел А', b: 'узел Б', path: 'трасса'
   };
-  var ROLE_NAMES = { admin: 'Администратор', editor: 'Редактор', viewer: 'Только просмотр' };
 
   // ------------------------------------------------------------------ общие элементы
 
@@ -93,7 +92,12 @@
 
   function metaLine(o) {
     var s = '';
-    if (o.pending) s += '<span class="pending">Изменения ещё не отправлены на сервер</span>';
+    if (o.pending) {
+      var sent = PHONE && D.queue.every(function (op) { return op.id !== o.id || op.exported; });
+      s += '<span class="pending">' + (!PHONE ? 'Сохраняется…' : sent
+        ? 'Отправлено диспетчеру, появится в общей карте после загрузки новой карты'
+        : 'Изменения ещё не отправлены диспетчеру') + '</span>';
+    }
     if (o.updated_at) s += '<span>Изменено ' + esc(NM.fmtTime(o.updated_at)) + (o.updated_by ? ', ' + esc(o.updated_by) : '') + '</span>';
     return '<div class="meta">' + s + '</div>';
   }
@@ -150,7 +154,7 @@
   function rerenderIfPassive() {
     var cur = hist[hist.length - 1];
     if (!cur || mode) return;
-    if (['node', 'link', 'list', 'sync'].indexOf(cur.view) >= 0) render();
+    if (['node', 'link', 'list', 'send', 'deskinfo'].indexOf(cur.view) >= 0) render();
   }
 
   // ------------------------------------------------------------------ карточки
@@ -196,7 +200,8 @@
     var a = D.view.get(o.data.a), b = D.view.get(o.data.b), edit = NM.canEdit();
     var html = '<div class="cardhead">' + lineSvg(o.data.type) + '<div><div class="sub">' +
       esc(NM.nameOf('link_types', o.data.type)) + ' · ' + NM.fmtDist(D.linkLength(o)) +
-      ((o.data.path || []).length ? ' · трасса из ' + ((o.data.path || []).length + 1) + ' отрезков' : '') + '</div></div></div>';
+      ((o.data.path || []).length ? ' · точек изгиба: ' + (o.data.path || []).length : ' · по прямой') +
+      (o.data.name ? '' : '') + '</div></div></div>';
     html += statusButtons(o);
     if (o.data.note) html += '<div class="note">' + esc(o.data.note) + '</div>';
     html += '<h3>Соединяет</h3><div class="rows">' + [a, b].map(function (n) {
@@ -207,8 +212,8 @@
     html += metaLine(o);
     html += '<div class="actions">';
     if (edit) {
-      html += '<button class="btn primary" data-act="edit-link" data-id="' + esc(o.id) + '">Изменить</button>' +
-        '<button class="btn" data-act="edit-path" data-id="' + esc(o.id) + '">Трасса</button>';
+      html += '<button class="btn primary" data-act="edit-path" data-id="' + esc(o.id) + '">Изменить трассу</button>' +
+        '<button class="btn" data-act="edit-link" data-id="' + esc(o.id) + '">Свойства</button>';
     }
     html += '<button class="btn" data-act="history" data-id="' + esc(o.id) + '">История</button>';
     if (edit) html += '<button class="btn danger" data-act="delete" data-id="' + esc(o.id) + '">Удалить</button>';
@@ -381,7 +386,43 @@
     return 'изменил ' + kind + ' ' + label + (parts.length ? ' — ' + parts.join('; ') : '');
   }
 
+  /** Свои правки телефона, ещё не вошедшие в карту, в виде записей журнала. */
+  function localEntries(obj) {
+    var seen = {};
+    return D.queue.slice().reverse().filter(function (op) { return !obj || op.id === obj; }).map(function (op) {
+      var o = D.view.get(op.id) || D.base.get(op.id), base = D.base.get(op.id), changes = null, action = op.action;
+      if (op.action === 'put') {
+        if (!base && !seen[op.id]) action = 'create';
+        else {
+          action = 'update'; changes = {};
+          for (var k in op.patch) changes[k] = [base ? base.data[k] : '', op.patch[k]];
+        }
+      }
+      seen[op.id] = true;
+      var data = (o && o.data) || op.patch || {};
+      return { ts: op.ts, user: (op.author || 'Вы'), kind: op.kind, obj_id: op.id, action: action, changes: changes,
+        label: op.kind === 'link' && o ? D.linkTitle(o) : (data.name || ''), local: op.exported ? 'sent' : 'unsent' };
+    });
+  }
+
+  function journalRow(e) {
+    var exists = D.view.has(e.obj_id);
+    return '<div class="jrow"' + (exists ? ' data-act="open" data-id="' + esc(e.obj_id) + '"' : '') + '><time>' +
+      esc(NM.fmtTime(e.ts)) + '</time><div><b>' + esc(e.user || '?') + '</b> ' + describeChange(e) +
+      (e.local ? ' <span class="tag ' + e.local + '">' + (e.local === 'sent' ? 'отправлено' : 'не отправлено') + '</span>' : '') +
+      '</div></div>';
+  }
+
   views.journal = function (arg) {
+    if (PHONE) {
+      var mine = localEntries(arg.obj);
+      var theirs = (D.journal || []).filter(function (e) { return !arg.obj || e.obj_id === arg.obj; });
+      var h = '';
+      if (mine.length) h += '<h3>Ваши изменения</h3>' + mine.map(journalRow).join('');
+      h += '<h3>Из файла карты' + (D.map ? ' от ' + esc(NM.fmtTime(D.map.created)) : '') + '</h3>';
+      h += theirs.length ? theirs.map(journalRow).join('') : '<p class="muted">Записей нет.</p>';
+      return { title: arg.obj ? 'История изменений' : 'Журнал изменений', html: h, tall: true };
+    }
     var html = '<div id="journal"><p class="muted">Загрузка…</p></div>';
     return {
       title: arg.obj ? 'История изменений' : 'Журнал изменений', html: html, tall: true,
@@ -393,18 +434,14 @@
               if (!before) box.innerHTML = '';
               var more = box.querySelector('.more'); if (more) more.remove();
               if (!res.entries.length && !before) { box.innerHTML = '<p class="muted">Изменений пока не было.</p>'; return; }
-              box.insertAdjacentHTML('beforeend', res.entries.map(function (e) {
-                var exists = D.view.has(e.obj_id);
-                return '<div class="jrow"' + (exists ? ' data-act="open" data-id="' + esc(e.obj_id) + '"' : '') + '><time>' +
-                  esc(NM.fmtTime(e.ts)) + '</time><div><b>' + esc(e.user || '?') + '</b> ' + describeChange(e) + '</div></div>';
-              }).join(''));
+              box.insertAdjacentHTML('beforeend', res.entries.map(journalRow).join(''));
               if (res.entries.length === 80) {
                 var last = res.entries[res.entries.length - 1].rev;
                 box.insertAdjacentHTML('beforeend', '<button class="btn more">Показать более ранние</button>');
                 box.querySelector('.more').onclick = function () { load(last); };
               }
             }, function (err) {
-              if (!before) box.innerHTML = '<p class="muted">Журнал хранится на сервере и доступен только при наличии связи. ' + esc(err.message) + '.</p>';
+              if (!before) box.innerHTML = '<p class="muted">' + esc(err.message) + '</p>';
             });
         }
         load(0);
@@ -412,44 +449,214 @@
     };
   };
 
-  // ------------------------------------------------------------------ связь и синхронизация
+  // ------------------------------------------------------------------ обмен файлами: телефон
 
-  views.sync = function () {
-    var st = D.status(), html = '';
-    var text = { online: 'Связь с сервером есть, все правки отправлены.', syncing: 'Связь есть, правки отправляются…',
-      offline: 'Связи с сервером нет. Карта и правки сохраняются на устройстве и отправятся, когда связь появится.', out: 'Вход не выполнен.' }[st];
-    html += '<p class="state ' + st + '">' + text + '</p>';
-    html += '<dl class="kv"><dt>Неотправленных правок</dt><dd>' + D.queue.length + '</dd>' +
-      '<dt>Последний обмен с сервером</dt><dd>' + (D.lastSync ? esc(NM.fmtTime(D.lastSync / 1000)) : 'ещё не было') + '</dd>' +
-      '<dt>Объектов на карте</dt><dd>' + D.nodes().length + ' узл., ' + D.links().length + ' лин.</dd>' +
-      '<dt>Сервер</dt><dd>' + esc(NM.session.server) + '</dd></dl>';
-    if (st !== 'offline' && D.online.length) {
-      html += '<h3>Сейчас в сети (' + D.online.length + ')</h3><p>' + D.online.map(function (u) { return esc(u.name); }).join(', ') + '</p>';
+  function stamp() {
+    var d = new Date(), p = function (n) { return (n < 10 ? '0' : '') + n; };
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + '_' + p(d.getHours()) + '-' + p(d.getMinutes());
+  }
+
+  function countText(n, one, few, many) {
+    var m10 = n % 10, m100 = n % 100;
+    return n + ' ' + (m10 === 1 && m100 !== 11 ? one : m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14) ? few : many);
+  }
+
+  function mapInfo() {
+    if (!D.map) return '<p class="muted">Карта ещё не загружалась.</p>';
+    return '<dl class="kv"><dt>Карта от</dt><dd>' + esc(NM.fmtTime(D.map.created)) + '</dd>' +
+      '<dt>На карте</dt><dd>' + D.nodes().length + ' узл., ' + D.links().length + ' лин.</dd></dl>';
+  }
+
+  views.send = function () {
+    var unsent = D.unsent().length, all = D.queue.length, html = '';
+    if (!all) {
+      html += '<p class="state sent">Все ваши изменения уже в общей карте или отправлены. Отправлять нечего.</p>';
+    } else if (!unsent) {
+      html += '<p class="state sent">Все изменения отправлены (' + all + '). Они останутся на вашей карте, пока не придёт новая карта от диспетчера.</p>';
+    } else {
+      html += '<p class="state unsent">Не отправлено: <b>' + countText(unsent, 'изменение', 'изменения', 'изменений') + '</b>.</p>';
     }
-    html += '<div class="actions"><button class="btn primary" data-act="sync-now">Обновить сейчас</button>';
-    if (D.queue.length) html += '<button class="btn danger" data-act="drop-queue">Отменить неотправленные правки</button>';
-    html += '</div>';
-    return { title: 'Связь с сервером', html: html };
+    html += '<dl class="kv"><dt>Подпись</dt><dd>' + esc(D.profile.name || 'не указана') +
+      ' <button class="link" data-act="show" data-view="settings">изменить</button></dd></dl>';
+    if (all) {
+      html += '<p class="muted">В файл попадут все ваши изменения, которых ещё нет в карте диспетчера' +
+        (unsent < all ? ', в том числе уже отправленные раньше — повторная загрузка ничего не испортит' : '') + '.</p>' +
+        '<div class="actions"><button class="btn primary" data-act="share-changes">Поделиться файлом</button>' +
+        '<button class="btn" data-act="save-changes">Сохранить в файл</button></div>';
+      html += '<h3>Что будет отправлено</h3>' + localEntries().slice(0, 50).map(journalRow).join('');
+    }
+    return { title: 'Отправить изменения', html: html, tall: true };
   };
 
-  // ------------------------------------------------------------------ настройки и учётная запись
+  function changesFile() {
+    return { name: 'karta-izmeneniya-' + stamp() + '.json', text: JSON.stringify(D.changesPackage()) };
+  }
+
+  window.__nmSaved = function (ok) {
+    if (ok) { D.markExported(); U.toast('Файл сохранён. Перешлите его диспетчеру.'); }
+    else U.toast('Файл не сохранён');
+    rerenderIfPassive();
+  };
+
+  views.loadmap = function () {
+    var html = '<p>Файл карты присылает диспетчер. Открыть его можно двумя способами:</p>' +
+      '<ul class="steps"><li>в мессенджере нажмите на файл → «Открыть с помощью» → <b>Карта сети</b>;</li>' +
+      '<li>или сохраните файл на телефон и выберите его кнопкой ниже.</li></ul>' +
+      '<div class="actions"><button class="btn primary" data-act="open-map">Выбрать файл карты</button></div>' +
+      '<h3>Сейчас на телефоне</h3>' + mapInfo();
+    if (D.unsent().length) {
+      html += '<p class="banner">У вас есть неотправленные изменения (' + D.unsent().length + '). При загрузке новой карты они ' +
+        'сохранятся и останутся на карте, но лучше сначала отправить их диспетчеру.</p>';
+    }
+    return { title: 'Загрузить карту', html: html, tall: true };
+  };
+
+  /** Файл, открытый на телефоне (кнопкой или из мессенджера). */
+  window.__nmOpened = function () {
+    var err = NM.native.takeOpenedError(), name = NM.native.takeOpenedName() || '', text = NM.native.takeOpenedText();
+    if (err || text == null) { U.toast('Не удалось открыть файл' + (err ? ': ' + err : ''), 6000); return; }
+    var pkg = null;
+    try { pkg = JSON.parse(text); } catch (e) { pkg = null; }
+    var problem = D.checkMap(pkg);
+    if (problem) { U.confirm(problem, 'Понятно').then(function () {}); return; }
+    var other = D.map && D.map.map_id && pkg.map_id && D.map.map_id !== pkg.map_id;
+    var applied = {};
+    (pkg.applied_ops || []).forEach(function (id) { applied[id] = true; });
+    var stay = D.queue.filter(function (op) { return !applied[op.op_id]; }).length;
+    var text2 = 'Загрузить карту от ' + NM.fmtTime(pkg.created) + '? В ней ' + pkg.objects.filter(function (o) { return o.kind === 'node'; }).length +
+      ' узл. и ' + pkg.objects.filter(function (o) { return o.kind === 'link'; }).length + ' лин.';
+    if (other && D.queue.length) text2 += ' Это карта с другого компьютера: ваши неотправленные изменения (' + D.queue.length + ') будут удалены.';
+    else if (stay) text2 += ' Ваши изменения, которых ещё нет в этой карте (' + stay + '), останутся.';
+    if (D.map && pkg.created < D.map.created) text2 += ' Внимание: этот файл старее карты, которая уже на телефоне.';
+    U.confirm(text2, 'Загрузить').then(function (yes) {
+      if (!yes) return;
+      var r = D.loadMap(pkg);
+      hist = []; closeSheet();
+      setTimeout(M.fitAll, 120);
+      U.toast('Карта загружена' + (r.merged ? '. Ваших изменений вошло в неё: ' + r.merged : '') + (r.kept ? '. Ещё не в карте: ' + r.kept : ''), 6000);
+    });
+  };
+  window.__nmOpenCancelled = function () {};
+
+  // ------------------------------------------------------------------ обмен файлами: компьютер
+
+  var importFiles = [];   // прочитанные файлы изменений: [{_name, ...}]
+
+  views.importch = function (arg) {
+    var html = '<p>Выберите файлы изменений, которые прислали бригады. Можно сразу несколько. Перед загрузкой ' +
+      'программа делает копию базы, а уже загруженные правки повторно не применяются.</p>' +
+      '<label class="filepick"><input type="file" id="chFiles" accept=".json,application/json" multiple>' +
+      '<span class="btn primary">Выбрать файлы…</span></label><div id="chPreview"></div>';
+    return { title: 'Загрузить изменения от бригад', html: html, tall: true, after: function (body) {
+      if (arg.report) showReport(body.querySelector('#chPreview'), arg.report);
+    } };
+  };
+
+  function readChangeFiles(files) {
+    var box = $('chPreview');
+    box.innerHTML = '<p class="muted">Читаю файлы…</p>';
+    var list = [].slice.call(files), out = [];
+    Promise.all(list.map(function (f) {
+      return f.text().then(function (t) {
+        var j;
+        try { j = JSON.parse(t); } catch (e) { j = { _bad: true }; }
+        if (!j || typeof j !== 'object' || Array.isArray(j)) j = { _bad: true };
+        j._name = f.name;
+        out.push(j);
+      });
+    })).then(function () {
+      importFiles = out;
+      return NM.api('POST', '/api/changes/preview', { files: out });
+    }).then(function (res) {
+      var fresh = res.total_new;
+      box.innerHTML = '<table class="tbl"><tr><th>Файл</th><th>Кто</th><th>Когда</th><th>Новых правок</th></tr>' +
+        res.files.map(function (f) {
+          return '<tr class="' + (f.ok ? '' : 'bad') + '"><td>' + esc(f.name) + '</td>' + (f.ok
+            ? '<td>' + esc(f.author || '—') + '</td><td>' + esc(NM.fmtTime(f.created)) + '</td><td>' + f.new +
+              (f.already ? ' <small>(ещё ' + f.already + ' уже загружено)</small>' : '') + '</td>'
+            : '<td colspan="3">' + esc(f.error) + '</td>') + '</tr>';
+        }).join('') + '</table>' +
+        (fresh ? '<div class="actions"><button class="btn primary" data-act="import-changes">Загрузить ' +
+          countText(fresh, 'правку', 'правки', 'правок') + '</button></div>'
+          : '<p class="muted">Новых правок в этих файлах нет.</p>');
+    }, function (err) { box.innerHTML = '<p class="error">' + esc(err.message) + '</p>'; });
+  }
+
+  function showReport(box, r) {
+    var html = '<p class="state sent">Загружено правок: <b>' + r.applied + '</b>' + (r.already ? ', уже были загружены раньше: ' + r.already : '') + '.</p>';
+    if (r.rejected.length) {
+      html += '<h3>Не применены (' + r.rejected.length + ')</h3><table class="tbl"><tr><th>Кто</th><th>Объект</th><th>Причина</th></tr>' +
+        r.rejected.map(function (x) {
+          return '<tr><td>' + esc(x.author) + '</td><td>' + esc(x.label || (x.kind === 'link' ? 'линия' : 'узел')) + '</td><td>' + esc(x.error) + '</td></tr>';
+        }).join('') + '</table>';
+    }
+    html += '<p class="muted">Копия базы до загрузки сохранена в папке data\\backups.</p>' +
+      '<div class="actions"><button class="btn" data-act="show" data-view="exportmap">Выгрузить карту для бригад</button></div>';
+    box.innerHTML = html;
+  }
+
+  views.exportmap = function () {
+    var html = '<p>Файл карты — это вся схема на сейчас. Перешлите его бригадам (например, в общий чат). В телефоне: ' +
+      'нажать на файл → «Открыть с помощью» → <b>Карта сети</b>, или меню → «Загрузить карту».</p>' +
+      '<p class="muted">Правки бригады, которые уже загружены в эту программу, после загрузки карты перестанут ' +
+      'считаться у неё неотправленными.</p>' +
+      '<dl class="kv"><dt>На карте</dt><dd>' + D.nodes().length + ' узл., ' + D.links().length + ' лин.</dd></dl>' +
+      '<div class="actions"><button class="btn primary" data-act="export-map">Сохранить файл карты</button></div>' +
+      '<h3>Приложение для телефона</h3><p class="muted">Файл установки лежит в папке программы: <b>apk\\karta-seti.apk</b>. ' +
+      'Новую версию ставят поверх старой, данные на телефоне сохраняются.</p>';
+    return { title: 'Выгрузить карту для бригад', html: html, tall: true };
+  };
+
+  function download(name, text, mime) {
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([text], { type: mime }));
+    a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 5000);
+  }
+
+  views.deskinfo = function () {
+    var st = D.status(), html = '';
+    html += '<p class="state ' + (st === 'down' ? 'unsent' : 'sent') + '">' + (st === 'down'
+      ? 'Программа на компьютере не отвечает. Запустите «Карта сети.bat» — окно с чёрным фоном должно оставаться открытым.'
+      : st === 'saving' ? 'Сохраняю изменения…' : 'Все изменения сохранены на этом компьютере.') + '</p>' +
+      '<dl class="kv"><dt>На карте</dt><dd>' + D.nodes().length + ' узл., ' + D.links().length + ' лин.</dd>' +
+      '<dt>Правки подписываются</dt><dd>' + esc(D.operator || 'Диспетчер') + '</dd></dl>' +
+      '<div class="actions"><button class="btn primary" data-act="show" data-view="importch">Загрузить изменения от бригад</button>' +
+      '<button class="btn" data-act="show" data-view="exportmap">Выгрузить карту для бригад</button></div>';
+    return { title: 'Карта сети', html: html };
+  };
+
+  // ------------------------------------------------------------------ настройки
 
   views.settings = function () {
-    var u = NM.session.user || {}, html = '';
-    html += '<dl class="kv"><dt>Пользователь</dt><dd>' + esc(u.name) + ' (' + esc(u.login) + ')</dd><dt>Права</dt><dd>' +
-      esc(ROLE_NAMES[u.role] || u.role) + '</dd><dt>Сервер</dt><dd>' + esc(NM.session.server) + '</dd><dt>Версия</dt><dd>' +
-      (NM.native ? 'приложение ' + esc(NM.native.versionName()) : 'браузер, клиент ' + NM.CLIENT_VERSION) + '</dd></dl>';
-    if (NM.native && apkInfo && apkInfo.versionCode > NM.native.versionCode()) {
-      html += '<div class="banner">Доступна новая версия приложения: ' + esc(apkInfo.versionName) +
-        '. <button class="link" data-act="update">Скачать обновление</button></div>';
+    var html = '';
+    if (PHONE) {
+      html += '<form data-form="profile"><label>Как подписывать ваши изменения (бригада, фамилия)' +
+        '<input id="pfName" maxlength="80" required value="' + esc(D.profile.name) + '" placeholder="Например: Бригада 3, Иванов"></label>' +
+        '<div class="actions"><button class="btn primary" type="submit">Сохранить</button></div></form>';
+      html += '<h3>Карта</h3>' + mapInfo();
+      html += '<dl class="kv"><dt>Версия приложения</dt><dd>' + esc(NM.native ? NM.native.versionName() : NM.CLIENT_VERSION) + '</dd></dl>';
+      if (D.queue.length) {
+        html += '<h3>Свои изменения</h3><p class="muted">Удалить все свои изменения, которых нет в карте диспетчера (' + D.queue.length +
+          '). Их нельзя будет вернуть.</p><div class="actions"><button class="btn danger" data-act="drop-queue">Удалить мои изменения</button></div>';
+      }
+    } else {
+      html += '<dl class="kv"><dt>Правки подписываются</dt><dd>' + esc(D.operator || 'Диспетчер') + '</dd>' +
+        '<dt>Версия</dt><dd>' + NM.CLIENT_VERSION + '</dd></dl>' +
+        '<p class="muted">Подпись, название карты и папка с данными настраиваются в файле <b>data\\config.json</b> ' +
+        '(поле «operator»). Резервные копии базы — в папке <b>data\\backups</b>: раз в сутки и перед каждой загрузкой изменений.</p>';
     }
-    html += '<h3>Сменить пароль</h3><form data-form="password">' +
-      '<label>Текущий пароль<input id="pwOld" type="password" autocomplete="current-password" required></label>' +
-      '<label>Новый пароль (не короче 6 символов)<input id="pwNew" type="password" autocomplete="new-password" required minlength="6"></label>' +
-      '<div class="error" id="pwError" hidden></div><div class="actions"><button class="btn" type="submit">Сменить пароль</button></div></form>';
-    html += '<h3>Выход</h3><p class="muted">После выхода карта на этом устройстве останется сохранённой, но открыть её можно будет только после входа.</p>' +
-      '<div class="actions"><button class="btn danger" data-act="logout">Выйти</button></div>';
     return { title: 'Настройки', html: html, tall: true };
+  };
+
+  views.welcome = function () {
+    var html = '<p>Это приложение работает без интернета и без подключения к серверу. Карта приходит файлом от диспетчера, ' +
+      'а ваши изменения вы отправляете ему файлом (кнопка «Отправить изменения» в меню).</p>' +
+      '<form data-form="profile"><label>Как подписывать ваши изменения' +
+      '<input id="pfName" maxlength="80" required placeholder="Например: Бригада 3, Иванов"></label>' +
+      '<div class="actions"><button class="btn primary" type="submit">Продолжить</button></div></form>';
+    return { title: 'Добро пожаловать', html: html, tall: true };
   };
 
   // ------------------------------------------------------------------ карта без интернета (только приложение)
@@ -519,65 +726,6 @@
     showDl();
   }
 
-  // ------------------------------------------------------------------ пользователи (администратор)
-
-  views.users = function () {
-    return {
-      title: 'Пользователи', tall: true,
-      html: '<div id="users"><p class="muted">Загрузка…</p></div><div class="actions"><button class="btn primary" data-act="show" data-view="userForm">Добавить пользователя</button></div>',
-      after: function (body) {
-        var box = body.querySelector('#users');
-        NM.api('GET', '/api/users').then(function (res) {
-          box.innerHTML = '<div class="rows">' + res.users.map(function (u) {
-            return '<button class="row' + (u.active ? '' : ' off') + '" data-act="user" data-user="' + esc(JSON.stringify(u)) + '">' +
-              '<i class="dot big" style="background:' + (u.online ? '#16a34a' : '#cbd5e1') + '"></i><span class="grow">' + esc(u.name) +
-              '<small>' + esc(u.login) + ' · ' + esc(ROLE_NAMES[u.role]) + (u.active ? '' : ' · отключён') +
-              (u.online ? ' · в сети' : u.last_seen ? ' · был ' + esc(NM.fmtTime(u.last_seen)) : ' · ещё не входил') + '</small></span></button>';
-          }).join('') + '</div>';
-        }, function (err) { box.innerHTML = '<p class="muted">Список пользователей доступен только при наличии связи. ' + esc(err.message) + '.</p>'; });
-      }
-    };
-  };
-
-  views.userForm = function (arg) {
-    var u = arg.user, html;
-    function roles(cur) {
-      return ['editor', 'viewer', 'admin'].map(function (r) {
-        return '<option value="' + r + '"' + (r === cur ? ' selected' : '') + '>' + ROLE_NAMES[r] + '</option>';
-      }).join('');
-    }
-    if (u) {
-      html = '<form data-form="user" data-id="' + u.id + '">' +
-        '<label>Имя (так человек виден остальным)<input id="uName" required maxlength="80" value="' + esc(u.name) + '"></label>' +
-        '<label>Права<select id="uRole">' + roles(u.role) + '</select></label>' +
-        '<label>Новый пароль (оставьте пустым, чтобы не менять)<input id="uPass" type="text" autocomplete="off" minlength="6"></label>' +
-        '<label class="check"><input type="checkbox" id="uActive"' + (u.active ? ' checked' : '') + '><span>Учётная запись действует</span></label>' +
-        '<p class="muted">Если снять отметку или сменить пароль, человек сразу потеряет доступ на всех своих устройствах.</p>';
-    } else {
-      html = '<form data-form="user" data-id="">' +
-        '<label>Логин (латиница и цифры)<input id="uLogin" required maxlength="40" autocapitalize="off" autocomplete="off" pattern="[A-Za-z0-9._\\-]+"></label>' +
-        '<label>Имя (так человек виден остальным)<input id="uName" required maxlength="80" autocomplete="off"></label>' +
-        '<label>Права<select id="uRole">' + roles('editor') + '</select></label>' +
-        '<label>Пароль (не короче 6 символов)<input id="uPass" type="text" required minlength="6" autocomplete="off"></label>';
-    }
-    html += '<div class="error" id="uError" hidden></div><div class="actions"><button class="btn primary" type="submit">Сохранить</button>' +
-      '<button class="btn" type="button" data-act="back">Отмена</button></div></form>';
-    return { title: u ? u.login : 'Новый пользователь', html: html, tall: true };
-  };
-
-  function submitUser(form) {
-    var id = form.dataset.id, err = $('uError'), req;
-    if (id) {
-      var body = { name: $('uName').value.trim(), role: $('uRole').value, active: $('uActive').checked };
-      if ($('uPass').value) body.password = $('uPass').value;
-      req = NM.api('PATCH', '/api/users/' + id, body);
-    } else {
-      req = NM.api('POST', '/api/users', { login: $('uLogin').value.trim(), name: $('uName').value.trim(), role: $('uRole').value, password: $('uPass').value });
-    }
-    req.then(function () { U.toast('Сохранено'); hist.pop(); render(); },
-      function (e) { err.textContent = e.message; err.hidden = false; });
-  }
-
   // ------------------------------------------------------------------ справочники (администратор)
 
   var LISTS = [
@@ -632,14 +780,6 @@
       '<input type="file" id="impFile" accept=".csv,.txt,text/csv"><div id="impResult"></div>';
     return { title: 'Импорт и экспорт', html: html, tall: true };
   };
-
-  function download(name, text, mime) {
-    var a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob([text], { type: mime }));
-    a.download = name;
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(function () { URL.revokeObjectURL(a.href); }, 5000);
-  }
 
   function exportData(fmt) {
     var stamp = new Date().toISOString().slice(0, 10);
@@ -848,26 +988,28 @@
 
   function startPath(id) {
     var o = D.view.get(id), a = D.view.get(o.data.a), b = D.view.get(o.data.b);
-    setMode({ type: 'path', id: id, path: (o.data.path || []).map(function (p) { return p.slice(); }), undo: [], sig: '' }, '', '', []);
-    M.editPath([a.data.lat, a.data.lng], [b.data.lat, b.data.lng], mode.path, function (path) {
+    setMode({ type: 'path', id: id, path: (o.data.path || []).map(function (p) { return p.slice(); }), undo: [], sel: null, sig: '' }, '', '', []);
+    M.editPath(id, [a.data.lat, a.data.lng], [b.data.lat, b.data.lng], mode.path, function (path) {
       mode.undo.push(mode.path); mode.path = path; updatePathBar();
+    }, function (sel) {
+      if (mode && mode.type === 'path') { mode.sel = sel; updatePathBar(); }
     });
     updatePathBar();
-    var pts = D.linkPoints(o);
-    M.fitPoints(pts, { top: 90, left: 44, right: 44, bottom: 210 }, 16);
   }
 
   function updatePathBar() {
     var o = D.view.get(mode.id), a = D.view.get(o.data.a), b = D.view.get(o.data.b);
     var pts = [[a.data.lat, a.data.lng]].concat(mode.path, [[b.data.lat, b.data.lng]]), len = 0;
     for (var i = 1; i < pts.length; i++) len += NM.distance(pts[i - 1], pts[i]);
-    modeText('Трасса · ' + NM.fmtDist(len) + ' · точек: ' + mode.path.length,
-      'Тяните точки по улицам. Бледная точка посередине отрезка добавляет изгиб, нажатие на точку убирает её.');
-    var sig = (mode.undo.length ? 1 : 0) + '' + (mode.path.length ? 1 : 0);
+    modeText(D.linkTitle(o) + ' · ' + NM.fmtDist(len),
+      mode.sel !== null ? 'Точка выбрана: её можно убрать кнопкой или перетащить.'
+        : 'Зажмите линию в любом месте и потяните — появится точка изгиба. Точки можно перетаскивать, нажатие на точку выбирает её.');
+    var sig = (mode.undo.length ? 1 : 0) + '' + (mode.path.length ? 1 : 0) + (mode.sel !== null ? 's' : '');
     if (sig !== mode.sig) {
       mode.sig = sig;
       modeButtons([{ act: 'mode-cancel', label: 'Отмена' }, { act: 'path-undo', label: 'Назад', off: !mode.undo.length },
-        { act: 'path-reset', label: 'Спрямить', off: !mode.path.length }, { act: 'mode-ok', label: 'Готово', cls: 'primary' }]);
+        mode.sel !== null ? { act: 'path-del', label: 'Убрать точку', cls: 'warn' } : { act: 'path-reset', label: 'Спрямить', off: !mode.path.length },
+        { act: 'mode-ok', label: 'Готово', cls: 'primary' }]);
     }
   }
 
@@ -900,26 +1042,35 @@
       else if (mode.type === 'draw' && id !== mode.a) finishDraw(id);
       return;
     }
-    U.open(id);
+    U.open(id, 'tap');
   });
 
   NM.on('maptap', function (latlng) {
     closeFab();
     if (mode) {
-      if (mode.type === 'path') M.editInsert(latlng);
+      if (mode.type === 'path') { if (mode.sel !== null) M.editSet(mode.path); }
       else if (mode.type === 'draw') drawAddPoint([latlng.lat, latlng.lng]);
       return;
     }
     if (currentIs('node') || currentIs('link')) closeSheet();
   });
 
-  /** Открывает карточку объекта и показывает его на карте. */
-  U.open = function (id, zoomIn) {
+  /**
+   * Открывает карточку объекта. После нажатия на карте масштаб и положение карты не меняются —
+   * карта лишь чуть сдвигается, если место нажатия оказалось под карточкой. Из списка и поиска
+   * карта переезжает к объекту, тоже без смены масштаба.
+   */
+  U.open = function (id, how) {
     var o = D.view.get(id);
     if (!o) { U.toast('Этот объект уже удалён'); return; }
     M.select(id);
     U.show(o.kind, { id: id }, currentIs('node') || currentIs('link'));
-    M.focus(id, zoomIn);
+    if (how === 'tap') {
+      var at = o.kind === 'node' ? [o.data.lat, o.data.lng] : M.lastTap;
+      setTimeout(function () { M.keepVisible(at); }, 30);
+    } else {
+      M.focus(id);
+    }
   };
 
   // ------------------------------------------------------------------ меню, кнопки, шапка
@@ -928,21 +1079,20 @@
   function closeFab() { $('fabmenu').hidden = true; $('fab').classList.remove('open'); }
 
   function updateChrome() {
-    var logged = !!NM.session.token, u = NM.session.user || {};
-    document.body.classList.toggle('role-admin', u.role === 'admin');
-    document.body.classList.toggle('role-edit', NM.canEdit());
+    document.body.classList.toggle('role-admin', NM.isAdmin());
+    document.body.classList.toggle('role-edit', true);
     document.body.classList.toggle('is-native', !!NM.native);
-    $('fab').hidden = !logged || !NM.canEdit() || !!mode;
-    $('drawersub').textContent = logged ? (u.name || '') + ' · ' + (ROLE_NAMES[u.role] || '') : '';
-    var st = D.status(), n = D.queue.length;
+    document.body.classList.toggle('is-phone', PHONE);
+    $('fab').hidden = !!mode;
+    $('drawersub').textContent = PHONE ? (D.profile.name || 'Подпись не указана') : 'Программа на компьютере · ' + (D.operator || '');
+    var st = D.status(), n = D.unsent().length;
     $('sync').className = st;
-    $('synctext').textContent = st === 'online' ? 'В сети' : st === 'syncing' ? 'Отправка ' + n : st === 'offline' ? (n ? 'Нет связи · ' + n : 'Нет связи') : '';
+    $('synctext').textContent = PHONE ? (n ? 'Не отправлено: ' + n : 'Всё отправлено')
+      : st === 'down' ? 'Программа не отвечает' : st === 'saving' ? 'Сохраняю…' : 'Сохранено';
     $('btnLocate').classList.toggle('on', M.following && M.following());
   }
 
-  NM.on('status', function () { updateChrome(); if (currentIs('sync')) render(); });
-  NM.on('user', function () { updateChrome(); rerenderIfPassive(); });
-  NM.on('presence', function () { if (currentIs('sync')) render(); });
+  NM.on('status', function () { updateChrome(); if (currentIs('send') || currentIs('deskinfo')) render(); });
   NM.on('locate', updateChrome);
   // компас: появляется, когда карта повёрнута; стрелка показывает на север, нажатие возвращает север наверх
   NM.on('bearing', function (b) {
@@ -951,12 +1101,12 @@
   });
   NM.on('mapready', function () { NM.emit('bearing', M.bearing()); });
   NM.on('objects', function () {
-    if (mode && mode.type === 'path' && !D.view.has(mode.id)) { cancelMode(true); U.toast('Линию удалил другой пользователь'); }
+    if (mode && mode.type === 'path' && !D.view.has(mode.id)) { cancelMode(true); U.toast('Эта линия удалена'); }
     rerenderIfPassive();
   });
   NM.on('settings', rerenderIfPassive);
   NM.on('rejected', function (list) {
-    U.toast('Сервер не принял правку: ' + list[0].error + (list.length > 1 ? ' (и ещё ' + (list.length - 1) + ')' : ''), 6000);
+    U.toast('Программа не приняла правку: ' + list[0].error + (list.length > 1 ? ' (и ещё ' + (list.length - 1) + ')' : ''), 6000);
   });
 
   var actions = {
@@ -965,7 +1115,7 @@
     close: closeSheet,
     back: back,
     show: function (d) { U.show(d.view, {}); },
-    sync: function () { U.show('sync', {}); },
+    sync: function () { U.show(PHONE ? 'send' : 'deskinfo', {}); },
     layer: function () { M.setLayer(M.prefs.layer === 'osm' ? 'sat' : 'osm'); },
     locate: function () { M.locate(); },
     fit: function () { M.fitAll(); },
@@ -977,7 +1127,7 @@
       if (D.nodes().length < 2) { U.toast('Чтобы провести линию, на карте должно быть хотя бы два узла'); return; }
       hist = []; startPick();
     },
-    open: function (d) { U.open(d.id, true); },
+    open: function (d) { U.open(d.id, 'list'); },
     tab: function (d) { hist[hist.length - 1].arg.tab = d.tab; render(); },
     'set-status': function (d) {
       var o = D.view.get(d.id);
@@ -1015,24 +1165,46 @@
       if (M.myPos) M.setView(M.myPos, Math.max(M.zoom(), 16)); else M.locate();
     },
     'path-reset': function () { mode.undo.push(mode.path); mode.path = []; M.editSet([]); updatePathBar(); },
+    'path-del': function () { M.editRemoveSelected(); },
     'path-undo': function () { if (mode.undo.length) { mode.path = mode.undo.pop(); M.editSet(mode.path); updatePathBar(); } },
     'draw-undo': function () { mode.pts.pop(); updateDraw(); },
     'draw-add': function () { if (mode.snap) finishDraw(mode.snap); else drawAddPoint(M.center()); },
     'dialog-ok': function () { if (dialogDone) dialogDone(true); },
     'dialog-cancel': function () { if (dialogDone) dialogDone(false); },
-    'sync-now': function () { D.connect(); U.toast('Обновляю…', 1500); },
     'drop-queue': function () {
-      U.confirm('Отменить неотправленные правки (' + D.queue.length + ')? Они будут потеряны.', 'Отменить правки', true)
-        .then(function (yes) { if (yes) D.dropQueue(); });
+      U.confirm('Удалить все свои изменения, которых нет в карте диспетчера (' + D.queue.length + ')? Вернуть их будет нельзя.', 'Удалить', true)
+        .then(function (yes) { if (yes) { D.dropQueue(); render(); } });
     },
-    logout: function () {
-      var go = function () { closeSheet(); D.logout(); };
-      if (!D.queue.length) { go(); return; }
-      U.confirm('Есть неотправленные правки (' + D.queue.length + '). Они отправятся после следующего входа. Выйти?', 'Выйти')
-        .then(function (yes) { if (yes) go(); });
+    'share-changes': function () {
+      var f = changesFile();
+      if (NM.native && NM.native.shareText(f.name, f.text)) {
+        D.markExported();
+        U.toast('Выберите, куда отправить файл (мессенджер, почта)', 4000);
+      } else if (!NM.native) {
+        download(f.name, f.text, 'application/json'); D.markExported();
+      } else U.toast('Не удалось подготовить файл');
     },
-    update: function () { NM.native.openExternal(NM.session.server + apkInfo.url); },
-    user: function (d) { U.show('userForm', { user: JSON.parse(d.user) }); },
+    'save-changes': function () {
+      var f = changesFile();
+      if (NM.native) NM.native.saveText(f.name, f.text);
+      else { download(f.name, f.text, 'application/json'); D.markExported(); }
+    },
+    'open-map': function () { if (NM.native) NM.native.openFile(); },
+    'export-map': function () {
+      NM.api('GET', '/api/map/export').then(function (pkg) {
+        download('karta-seti-karta-' + stamp() + '.json', JSON.stringify(pkg), 'application/json');
+        U.toast('Файл карты сохранён в папку «Загрузки». Перешлите его бригадам.', 6000);
+      }, function (err) { U.toast(err.message, 6000); });
+    },
+    'import-changes': function (d, el) {
+      el.disabled = true; el.textContent = 'Загружаю…';
+      NM.api('POST', '/api/changes/import', { files: importFiles }).then(function (r) {
+        importFiles = [];
+        hist[hist.length - 1].arg.report = r;
+        render();
+        D.pull(false);
+      }, function (err) { el.disabled = false; el.textContent = 'Загрузить'; U.toast(err.message, 6000); });
+    },
     'type-add': function (d) {
       var l = LISTS.filter(function (x) { return x.key === d.list; })[0];
       document.querySelector('.tlist[data-list="' + d.list + '"]').insertAdjacentHTML('beforeend',
@@ -1076,14 +1248,15 @@
     e.preventDefault();
     if (kind === 'node') submitNode(form);
     else if (kind === 'link') submitLink(form);
-    else if (kind === 'user') submitUser(form);
     else if (kind === 'types') submitTypes();
-    else if (kind === 'password') {
-      var err = $('pwError');
-      NM.api('POST', '/api/password', { old: $('pwOld').value, 'new': $('pwNew').value }).then(function () {
-        U.toast('Пароль изменён'); render();
-      }, function (x) { err.textContent = x.message; err.hidden = false; });
-    } else if (form.id === 'loginform') doLogin();
+    else if (kind === 'profile') {
+      var name = $('pfName').value.trim();
+      if (!name) return;
+      var first = !D.profile.name;
+      D.setProfile(name);
+      updateChrome();
+      if (first) { hist = []; U.show('loadmap', {}); } else { U.toast('Сохранено'); back(); }
+    }
   });
 
   document.addEventListener('change', function (e) {
@@ -1096,6 +1269,10 @@
       M.setLabels(el.checked);
     } else if (el.id === 'impFile' && el.files[0]) {
       readImport(el.files[0]);
+    } else if (el.id === 'chFiles' && el.files.length) {
+      hist[hist.length - 1].arg.report = null;
+      readChangeFiles(el.files);
+      el.value = '';
     }
   });
 
@@ -1135,14 +1312,17 @@
   });
 
   function updateHint() {
-    $('hint').hidden = !(NM.session.token && NM.canEdit() && !mode && !hist.length && D.connected && D.view.size === 0);
+    var empty = !mode && !hist.length && D.view.size === 0 && (PHONE || D.connected);
+    $('hint').hidden = !empty;
+    $('hint').innerHTML = PHONE
+      ? 'Карта пустая. Загрузите файл карты от диспетчера (меню → <b>Загрузить карту</b>) или нажмите <b>+</b>, чтобы поставить узел.'
+      : 'Карта пустая. Нажмите <b>+</b>, чтобы поставить первый узел, или загрузите изменения от бригад через меню.';
   }
-  NM.on('objects', updateHint); NM.on('status', updateHint); NM.on('auth', updateHint);
+  NM.on('objects', updateHint); NM.on('status', updateHint);
 
   // кнопка «назад» телефона: закрывает то, что открыто поверх карты
   window.__nmBack = function () {
     if (dialogDone) { dialogDone(false); return true; }
-    if (!$('login').hidden) return false;
     if (!$('fabmenu').hidden) { closeFab(); return true; }
     if (!$('drawer').hidden) { closeDrawer(); return true; }
     if (mode) { cancelMode(false); return true; }
@@ -1152,84 +1332,22 @@
   document.addEventListener('keydown', function (e) { if (e.key === 'Escape') window.__nmBack(); });
   window.addEventListener('resize', NM.debounce(function () { M.resize(); }, 150));
 
-  // ------------------------------------------------------------------ вход
-
-  function showLogin() {
-    closeSheet(); closeDrawer(); if (mode) cancelMode(true);
-    $('serverrow').hidden = NM.servedByServer;
-    $('lgServer').value = NM.session.server || '';
-    $('lgLogin').value = (NM.session.user && NM.session.user.login) || '';
-    $('lgPass').value = '';
-    $('lgError').hidden = true;
-    $('lgVer').textContent = NM.native ? 'Версия приложения ' + NM.native.versionName() : '';
-    $('login').hidden = false;
-    document.body.classList.add('logged-out');
-    if (NM.servedByServer && !NM.native) {
-      NM.api('GET', '/api/info').then(function (info) {
-        if (info.apk) {
-          var a = $('lgApk');
-          a.href = info.apk.url; a.hidden = false;
-          a.textContent = 'Скачать приложение для Android (версия ' + info.apk.versionName + ')';
-        }
-      }, function () {});
-    }
-  }
-
-  function doLogin() {
-    var err = $('lgError'), btn = $('lgBtn');
-    var server = NM.servedByServer ? location.origin : NM.normalizeServer($('lgServer').value);
-    if (!server) { err.textContent = 'Укажите адрес сервера, например http://192.168.1.10:8790'; err.hidden = false; return; }
-    var go = function () {
-      btn.disabled = true; btn.textContent = 'Вход…'; err.hidden = true;
-      D.login(server, $('lgLogin').value, $('lgPass').value).then(function () {
-        btn.disabled = false; btn.textContent = 'Войти';
-        fitPending = true;   // после входа показываем всю сеть, как только она загрузится
-      }, function (e) {
-        btn.disabled = false; btn.textContent = 'Войти';
-        err.textContent = e.code === 'network'
-          ? 'Сервер не отвечает. Проверьте адрес и подключение к интернету.' : e.message;
-        err.hidden = false;
-      });
-    };
-    if (server !== NM.session.server && D.queue.length) {
-      U.confirm('На устройстве есть неотправленные правки для другого сервера (' + D.queue.length +
-        '). При входе на новый сервер они будут потеряны. Продолжить?', 'Продолжить', true).then(function (yes) { if (yes) go(); });
-    } else go();
-  }
-
-  function checkUpdate() {
-    if (!NM.native) return;
-    NM.api('GET', '/api/info').then(function (info) {
-      apkInfo = info.apk;
-      if (apkInfo && apkInfo.versionCode > NM.native.versionCode()) {
-        U.toast('Доступна новая версия приложения. Обновить можно в меню «Настройки».', 6000);
-      }
-    }, function () {});
-  }
-
-  NM.on('auth', function () {
-    if (NM.session.token) {
-      $('login').hidden = true;
-      document.body.classList.remove('logged-out');
-      updateChrome();
-      M.rebuild();
-      checkUpdate();
-    } else {
-      showLogin();
-    }
-    updateChrome();
-  });
-
   // ------------------------------------------------------------------ запуск
 
-  var hadSession = D.load();
+  D.load();
   M.init();
   document.body.classList.remove('booting');
   updateChrome();
-  if (hadSession) {
-    NM.emit('auth');
-    D.connect();
+  updateHint();
+  if (PHONE) {
+    if (!D.profile.name) U.show('welcome', {});
+    if (NM.native && NM.native.ready) NM.native.ready();   // теперь можно принять файл, открытый из мессенджера
   } else {
-    showLogin();
+    NM.api('GET', '/api/info').then(function (info) {
+      D.operator = info.operator || D.operator;
+      if (info.title) document.title = info.title;
+      updateChrome();
+    }, function () {});
+    D.connect();
   }
 })();

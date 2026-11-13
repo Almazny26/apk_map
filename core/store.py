@@ -67,6 +67,10 @@ CREATE INDEX IF NOT EXISTS journal_obj ON journal(obj_id);
 CREATE TABLE IF NOT EXISTS applied_ops(op_id TEXT PRIMARY KEY, rev INTEGER, ts REAL NOT NULL);
 """
 
+FORMAT = "karta-seti"
+FORMAT_VERSION = 1
+JOURNAL_IN_MAP = 500       # сколько последних записей журнала кладётся в файл карты для телефонов
+
 ROLES = ("admin", "editor", "viewer")
 PBKDF2_ROUNDS = 200_000
 SESSION_TTL = 180 * 24 * 3600  # вход на телефоне живёт полгода без обращений
@@ -143,6 +147,13 @@ class Store:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=NORMAL")
         self.db.executescript(SCHEMA)
+        cols = [r["name"] for r in self.db.execute("PRAGMA table_info(objects)")]
+        if "updated_by_name" not in cols:
+            # с версии 1.3 автор правки хранится текстом: правки приходят файлами от бригад, а не от учётных записей
+            self.db.execute("ALTER TABLE objects ADD COLUMN updated_by_name TEXT")
+        self._op_ts = None
+        if not self._meta_get("map_id"):
+            self._meta_set("map_id", secrets.token_hex(8))
         self._user_names = {}
         self._reload_user_names()
 
@@ -170,6 +181,15 @@ class Store:
             "INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             (key, json.dumps(value, ensure_ascii=False)),
         )
+
+    def map_id(self):
+        """Постоянный идентификатор этой карты: по нему файлы изменений проверяются на «свою» карту."""
+        with self.lock:
+            return self._meta_get("map_id")
+
+    def _ts(self):
+        """Время правки: для правок из файла — когда её сделали на телефоне, иначе — сейчас."""
+        return self._op_ts or time.time()
 
     def current_rev(self):
         with self.lock:
@@ -395,7 +415,7 @@ class Store:
             "data": json.loads(row["data"]),
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
-            "updated_by": self.user_name(row["updated_by"]),
+            "updated_by": row["updated_by_name"] or self.user_name(row["updated_by"]),
         }
 
     def snapshot(self):
@@ -452,7 +472,7 @@ class Store:
     def _write_journal(self, user, kind, obj_id, action, label, changes):
         cur = self.db.execute(
             "INSERT INTO journal(ts,user_id,user_name,kind,obj_id,action,label,changes) VALUES(?,?,?,?,?,?,?,?)",
-            (time.time(), user["id"], user["name"], kind, obj_id, action, label,
+            (self._ts(), user.get("id"), user["name"], kind, obj_id, action, label,
              json.dumps(changes, ensure_ascii=False) if changes else None),
         )
         return cur.lastrowid
@@ -470,7 +490,7 @@ class Store:
 
     def _apply_put(self, user, kind, obj_id, patch):
         row = self._get(obj_id)
-        now = time.time()
+        now = self._ts()
         if row is None:
             data = {"name": "", "type": "", "status": "", "note": ""}
             if kind == "node":
@@ -490,9 +510,9 @@ class Store:
                     raise OpError("no_node", "Один из узлов линии уже удалён")
             rev = self._write_journal(user, kind, obj_id, "create", self._label(kind, data), None)
             self.db.execute(
-                "INSERT INTO objects(id,kind,data,rev,created_at,created_by,updated_at,updated_by,deleted) "
-                "VALUES(?,?,?,?,?,?,?,?,0)",
-                (obj_id, kind, json.dumps(data, ensure_ascii=False), rev, now, user["id"], now, user["id"]),
+                "INSERT INTO objects(id,kind,data,rev,created_at,created_by,updated_at,updated_by,updated_by_name,deleted) "
+                "VALUES(?,?,?,?,?,?,?,?,?,0)",
+                (obj_id, kind, json.dumps(data, ensure_ascii=False), rev, now, user.get("id"), now, user.get("id"), user["name"]),
             )
             return [obj_id]
         if row["kind"] != kind:
@@ -514,8 +534,8 @@ class Store:
                 raise OpError("no_node", "Линия должна соединять два существующих узла")
         rev = self._write_journal(user, kind, obj_id, "update", self._label(kind, data), changes)
         self.db.execute(
-            "UPDATE objects SET data=?, rev=?, updated_at=?, updated_by=? WHERE id=?",
-            (json.dumps(data, ensure_ascii=False), rev, now, user["id"], obj_id),
+            "UPDATE objects SET data=?, rev=?, updated_at=?, updated_by=?, updated_by_name=? WHERE id=?",
+            (json.dumps(data, ensure_ascii=False), rev, now, user.get("id"), user["name"], obj_id),
         )
         return [obj_id]
 
@@ -523,7 +543,7 @@ class Store:
         row = self._get(obj_id)
         if row is None or row["deleted"]:
             return []
-        now = time.time()
+        now = self._ts()
         touched = []
         if row["kind"] == "node":
             # вместе с узлом удаляются линии, которые в него приходят
@@ -532,15 +552,15 @@ class Store:
                 if ld.get("a") == obj_id or ld.get("b") == obj_id:
                     rev = self._write_journal(user, "link", link["id"], "delete", self._label("link", ld), None)
                     self.db.execute(
-                        "UPDATE objects SET deleted=1, rev=?, updated_at=?, updated_by=? WHERE id=?",
-                        (rev, now, user["id"], link["id"]),
+                        "UPDATE objects SET deleted=1, rev=?, updated_at=?, updated_by=?, updated_by_name=? WHERE id=?",
+                        (rev, now, user.get("id"), user["name"], link["id"]),
                     )
                     touched.append(link["id"])
         data = json.loads(row["data"])
         rev = self._write_journal(user, row["kind"], obj_id, "delete", self._label(row["kind"], data), None)
         self.db.execute(
-            "UPDATE objects SET deleted=1, rev=?, updated_at=?, updated_by=? WHERE id=?",
-            (rev, now, user["id"], obj_id),
+            "UPDATE objects SET deleted=1, rev=?, updated_at=?, updated_by=?, updated_by_name=? WHERE id=?",
+            (rev, now, user.get("id"), user["name"], obj_id),
         )
         touched.append(obj_id)
         return touched
@@ -564,6 +584,9 @@ class Store:
                     if not op_id or not obj_id or kind not in ("node", "link") or action not in ("put", "delete"):
                         raise OpError("bad_op", "Неверно составленная правка")
                     done = self.db.execute("SELECT rev FROM applied_ops WHERE op_id=?", (op_id,)).fetchone()
+                    res["already"] = done is not None
+                    ts = op.get("ts")
+                    self._op_ts = float(ts) if isinstance(ts, (int, float)) and 1577836800 < ts < time.time() + 86400 else None
                     if done is None:
                         self.db.execute("BEGIN")
                         try:
@@ -585,6 +608,8 @@ class Store:
                     res["ok"] = True
                 except OpError as e:
                     res.update(ok=False, code=e.code, error=e.message)
+                finally:
+                    self._op_ts = None
                 row = self._get(obj_id) if obj_id else None
                 res["object"] = self._obj(row) if row else None
                 results.append(res)
@@ -592,9 +617,116 @@ class Store:
             rev = self.current_rev()
         return results, changed, rev
 
-    def prune_applied_ops(self, older_than=45 * 24 * 3600):
+    # Список применённых правок не чистится: по нему телефоны узнают, какие их правки уже в карте,
+    # а повторно пришедший старый файл не перезапишет более свежие данные.
+
+    # ------------------------------------------------------------------ обмен файлами с бригадами
+
+    def export_map(self, title=""):
+        """Файл карты для телефонов: все живые объекты, справочники, список применённых правок, журнал."""
         with self.lock:
-            self.db.execute("DELETE FROM applied_ops WHERE ts<?", (time.time() - older_than,))
+            snap = self.snapshot()
+            applied = [r["op_id"] for r in self.db.execute("SELECT op_id FROM applied_ops ORDER BY ts")]
+            return {
+                "format": FORMAT, "version": FORMAT_VERSION, "kind": "map",
+                "map_id": self.map_id(), "title": title, "created": time.time(),
+                "rev": snap["rev"], "settings": self.get_settings(), "objects": snap["objects"],
+                "applied_ops": applied, "journal": self.journal(limit=JOURNAL_IN_MAP),
+            }
+
+    def _check_package(self, pkg):
+        if not isinstance(pkg, dict) or pkg.get("format") != FORMAT:
+            raise OpError("bad_file", "Это не файл программы «Карта сети»")
+        if pkg.get("kind") != "changes":
+            raise OpError("bad_file", "Это файл карты, а не файл изменений. Файлы карты загружаются в телефон")
+        if pkg.get("map_id") and pkg.get("map_id") != self.map_id():
+            raise OpError("other_map", "Изменения сделаны в другой карте (файл карты не с этого компьютера)")
+        if not isinstance(pkg.get("ops"), list):
+            raise OpError("bad_file", "В файле нет списка изменений")
+
+    def preview_changes(self, packages):
+        """Что принесут файлы: сколько правок новых, сколько уже загружено, кто автор. Ничего не меняет."""
+        out = []
+        with self.lock:
+            for pkg in packages:
+                item = {"name": str(pkg.get("_name") or "")[:200]}
+                try:
+                    self._check_package(pkg)
+                    ops = [o for o in pkg["ops"] if isinstance(o, dict)]
+                    ids = [str(o.get("op_id") or "") for o in ops]
+                    already = 0
+                    for i in range(0, len(ids), 500):
+                        chunk = ids[i:i + 500]
+                        q = "SELECT COUNT(*) AS c FROM applied_ops WHERE op_id IN (%s)" % ",".join("?" * len(chunk))
+                        already += self.db.execute(q, chunk).fetchone()["c"]
+                    item.update(ok=True, author=str(pkg.get("author") or "")[:80], created=pkg.get("created"),
+                                total=len(ops), already=already, new=len(ops) - already,
+                                nodes=len({o.get("id") for o in ops if o.get("kind") == "node"}),
+                                links=len({o.get("id") for o in ops if o.get("kind") == "link"}))
+                except OpError as e:
+                    item.update(ok=False, error=e.message)
+                out.append(item)
+        return out
+
+    def count_new_ops(self, packages):
+        """Сколько разных ещё не загруженных правок во всех файлах вместе (один файл могли прислать дважды)."""
+        ids = set()
+        for pkg in packages:
+            try:
+                self._check_package(pkg)
+            except OpError:
+                continue
+            ids.update(str(o.get("op_id")) for o in pkg["ops"] if isinstance(o, dict) and o.get("op_id"))
+        ids = list(ids)
+        with self.lock:
+            done = 0
+            for i in range(0, len(ids), 500):
+                chunk = ids[i:i + 500]
+                done += self.db.execute("SELECT COUNT(*) AS c FROM applied_ops WHERE op_id IN (%s)" % ",".join("?" * len(chunk)), chunk).fetchone()["c"]
+        return len(ids) - done
+
+    def import_changes(self, packages, fallback_author="Бригада"):
+        """Применяет правки из файлов бригад.
+
+        Правки из всех файлов идут в порядке времени, когда их сделали: если две бригады поменяли одно
+        поле, остаётся более поздняя правка. Уже загруженные правки пропускаются. Возвращает отчёт.
+        """
+        report = {"files": [], "applied": 0, "already": 0, "rejected": [], "changed": []}
+        queue = []
+        for fi, pkg in enumerate(packages):
+            entry = {"name": str(pkg.get("_name") or "")[:200]}
+            try:
+                self._check_package(pkg)
+                author = str(pkg.get("author") or "").strip()[:80] or fallback_author
+                entry.update(ok=True, author=author, total=0)
+                for oi, op in enumerate(pkg["ops"]):
+                    if isinstance(op, dict):
+                        ts = op.get("ts") if isinstance(op.get("ts"), (int, float)) else 0
+                        queue.append((ts, fi, oi, author, op))
+                        entry["total"] += 1
+            except OpError as e:
+                entry.update(ok=False, error=e.message)
+            report["files"].append(entry)
+        queue.sort(key=lambda x: (x[0], x[1], x[2]))
+        changed = {}
+        for ts, fi, oi, author, op in queue:
+            results, objs, rev = self.apply_ops({"id": None, "name": author}, [op])
+            r = results[0]
+            if not r.get("ok"):
+                obj = r.get("object")
+                patch = op.get("patch") if isinstance(op.get("patch"), dict) else {}
+                label = (obj["data"].get("name") if obj else "") or patch.get("name") or ""
+                report["rejected"].append({"author": author, "error": r.get("error"), "kind": op.get("kind"),
+                                           "label": label or "", "id": op.get("id")})
+            elif r.get("already"):
+                report["already"] += 1
+            else:
+                report["applied"] += 1
+            for o in objs:
+                changed[o["id"]] = o
+        report["changed"] = list(changed.values())
+        report["rev"] = self.current_rev()
+        return report
 
     # ------------------------------------------------------------------ журнал
 

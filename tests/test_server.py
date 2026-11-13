@@ -236,3 +236,108 @@ class ServerTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LocalModeTest(unittest.TestCase):
+    """Программа на ПК с 1.3: без входа, только этот компьютер, обмен файлами с бригадами."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.store = Store(os.path.join(cls.tmp.name, "l.db"))
+        cls.app = App(cls.store, os.path.join(ROOT, "web"), os.path.join(ROOT, "apk"), local=True, operator="Диспетчер",
+                      backup_dir=os.path.join(cls.tmp.name, "backups"))
+        cls.server = make_server(cls.app, "127.0.0.1", 0)
+        cls.base = "http://127.0.0.1:%d" % cls.server.server_address[1]
+        threading.Thread(target=cls.server.serve_forever, daemon=True).start()
+        cls.c = Client(cls.base)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.store.close()
+        cls.tmp.cleanup()
+
+    def pkg(self, author, ops, map_id="__own__"):
+        return {"format": "karta-seti", "version": 1, "kind": "changes", "author": author, "created": time.time(),
+                "map_id": self.store.map_id() if map_id == "__own__" else map_id, "ops": ops, "_name": author + ".json"}
+
+    def op(self, op_id, obj_id, patch, ts, kind="node", action="put"):
+        return {"op_id": op_id, "id": obj_id, "kind": kind, "action": action, "patch": patch, "ts": ts}
+
+    def test_01_no_login_and_operator(self):
+        st, r = self.c.call("GET", "/api/snapshot")
+        self.assertEqual(st, 200)
+        st, r = self.c.call("POST", "/api/ops", {"ops": [self.op("d1", "N0", {"name": "Узел ПК", "lat": 55.0, "lng": 37.0}, None)]})
+        self.assertTrue(r["results"][0]["ok"], r)
+        self.assertEqual(r["results"][0]["object"]["updated_by"], "Диспетчер")
+
+    def test_02_foreign_pages_refused(self):
+        req = urllib.request.Request(self.base + "/api/snapshot", headers={"Host": "evil.example"})
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            urllib.request.urlopen(req, timeout=5)
+        self.assertEqual(cm.exception.code, 403)
+        req = urllib.request.Request(self.base + "/api/ops", data=b'{"ops":[]}', method="POST",
+                                     headers={"Origin": "http://evil.example", "Content-Type": "application/json"})
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            urllib.request.urlopen(req, timeout=5)
+        self.assertEqual(cm.exception.code, 403)
+        with urllib.request.urlopen(self.base + "/api/info", timeout=5) as r:
+            self.assertNotIn("Access-Control-Allow-Origin", r.headers)
+
+    def test_03_import_two_teams_ordered_by_time(self):
+        t = time.time() - 3600
+        a = self.pkg("Бригада 1", [
+            self.op("a1", "A", {"name": "УД-1", "lat": 55.1, "lng": 37.1, "status": "ok"}, t),
+            self.op("a2", "A", {"note": "позднее примечание"}, t + 300),
+        ])
+        b = self.pkg("Бригада 2", [
+            self.op("b1", "A", {"note": "раннее примечание", "status": "fail"}, t + 100),
+            self.op("b2", "B", {"name": "УД-2", "lat": 55.2, "lng": 37.2}, t + 110),
+            self.op("b3", "L", {"a": "A", "b": "B", "path": [[55.15, 37.15]]}, t + 120, kind="link"),
+        ])
+        st, prev = self.c.call("POST", "/api/changes/preview", {"files": [a, b]})
+        self.assertEqual([(f["author"], f["new"]) for f in prev["files"]], [("Бригада 1", 2), ("Бригада 2", 3)])
+        self.assertEqual(prev["total_new"], 5)
+        st, rep = self.c.call("POST", "/api/changes/import", {"files": [a, b]})
+        self.assertEqual((rep["applied"], rep["already"], rep["rejected"]), (5, 0, []), rep)
+        st, snap = self.c.call("GET", "/api/snapshot")
+        A = [o for o in snap["objects"] if o["id"] == "A"][0]
+        self.assertEqual((A["data"]["note"], A["data"]["status"]), ("позднее примечание", "fail"))
+        self.assertEqual(A["updated_by"], "Бригада 1")
+        st, j = self.c.call("GET", "/api/journal?obj=A")
+        self.assertEqual({e["user"] for e in j["entries"]}, {"Бригада 1", "Бригада 2"})
+        self.assertTrue(abs(j["entries"][-1]["ts"] - t) < 1, "в журнале время правки с телефона, а не время загрузки")
+        self.assertTrue(os.listdir(os.path.join(self.tmp.name, "backups")), "перед импортом делается копия базы")
+
+    def test_04_reimport_is_harmless(self):
+        st, before = self.c.call("GET", "/api/snapshot")
+        pkg = self.pkg("Бригада 1", [self.op("a1", "A", {"name": "УД-1", "lat": 1, "lng": 1}, time.time() - 3600)])
+        st, prev = self.c.call("POST", "/api/changes/preview", {"files": [pkg]})
+        self.assertEqual((prev["files"][0]["new"], prev["files"][0]["already"]), (0, 1))
+        st, rep = self.c.call("POST", "/api/changes/import", {"files": [pkg]})
+        self.assertEqual((rep["applied"], rep["already"]), (0, 1))
+        st, after = self.c.call("GET", "/api/snapshot")
+        self.assertEqual(before["rev"], after["rev"])
+
+    def test_05_wrong_files(self):
+        other = self.pkg("Чужие", [self.op("x1", "X", {"name": "x", "lat": 1, "lng": 1}, None)], map_id="0000")
+        st, rep = self.c.call("POST", "/api/changes/import", {"files": [other, {"format": "karta-seti", "kind": "map"}, {"foo": 1}]})
+        self.assertEqual(rep["applied"], 0)
+        self.assertEqual([f["ok"] for f in rep["files"]], [False, False, False])
+        late = self.pkg("Бригада 3", [self.op("c1", "Z", {"note": "узла уже нет"}, time.time())])
+        self.c.call("POST", "/api/ops", {"ops": [self.op("d2", "Z", {"name": "Z", "lat": 1, "lng": 1}, None),
+                                                 {"op_id": "d3", "id": "Z", "kind": "node", "action": "delete"}]})
+        st, rep = self.c.call("POST", "/api/changes/import", {"files": [late]})
+        self.assertEqual(len(rep["rejected"]), 1)
+        self.assertEqual(rep["rejected"][0]["author"], "Бригада 3")
+
+    def test_06_export_map(self):
+        st, m = self.c.call("GET", "/api/map/export")
+        self.assertEqual((m["format"], m["kind"], m["map_id"]), ("karta-seti", "map", self.store.map_id()))
+        ids = {o["id"] for o in m["objects"]}
+        self.assertTrue({"A", "B", "L"} <= ids and "Z" not in ids)
+        self.assertIn("a1", m["applied_ops"])
+        self.assertTrue(m["journal"])
+        self.assertIn("node_types", m["settings"])

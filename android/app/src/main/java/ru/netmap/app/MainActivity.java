@@ -4,6 +4,8 @@ import android.Manifest;
 import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.content.Intent;
+import android.database.Cursor;
+import android.provider.OpenableColumns;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
@@ -24,6 +26,7 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
@@ -35,8 +38,10 @@ import java.util.Map;
  * Оболочка для клиента «Карта сети».
  *
  * Сам клиент (каталог web/ репозитория) вшит в APK и открывается из assets, поэтому приложение
- * запускается и без связи. Оболочка добавляет то, чего нет у страницы в браузере:
+ * работает без сервера и без связи. Оболочка добавляет то, чего нет у страницы в браузере:
  *   - хранение данных в файлах приложения (мост NetMapNative.load/save);
+ *   - обмен файлами с диспетчером: «Поделиться» (мессенджер, почта), «Сохранить» в выбранную папку,
+ *     открытие файла карты — через выбор файла или прямо из мессенджера («Открыть с помощью»);
  *   - кэш плиток карты на диске, чтобы карта открывалась без интернета;
  *   - разрешение на геолокацию.
  */
@@ -47,11 +52,21 @@ public class MainActivity extends Activity {
     private static final String TILE_MARK = "nmcache=1";
     private static final long TILE_MAX_AGE_MS = 90L * 24 * 3600 * 1000;
     private static final int REQ_LOCATION = 1;
+    private static final int REQ_OPEN = 2;
+    private static final int REQ_SAVE = 3;
+    private static final long MAX_FILE = 64L * 1024 * 1024;
 
     private WebView web;
     private File tileDir;
     private File dataDir;
     private volatile long lastTileFailure = 0;
+
+    /** Открытый файл ждёт, пока страница его заберёт (большие строки не гоняем через evaluateJavascript). */
+    private volatile String openedName = null;
+    private volatile String openedText = null;
+    private volatile String openedError = null;
+    private String pendingSaveText = null;
+    private boolean pageReady = false;
 
     private GeolocationPermissions.Callback geoCallback;
     private String geoOrigin;
@@ -87,6 +102,89 @@ public class MainActivity extends Activity {
         web.setWebViewClient(new Client());
         web.setWebChromeClient(new Chrome());
         web.loadUrl(START_URL);
+        handleIncoming(getIntent());
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        handleIncoming(intent);
+    }
+
+    /** Файл, открытый из мессенджера («Открыть с помощью» или «Поделиться» в приложение). */
+    private void handleIncoming(Intent intent) {
+        if (intent == null) return;
+        Uri uri = null;
+        if (Intent.ACTION_VIEW.equals(intent.getAction())) {
+            uri = intent.getData();
+        } else if (Intent.ACTION_SEND.equals(intent.getAction())) {
+            uri = intent.getParcelableExtra(Intent.EXTRA_STREAM);
+        }
+        if (uri != null) readUri(uri);
+    }
+
+    private void readUri(Uri uri) {
+        new Thread(() -> {
+            String name = displayName(uri), text = null, error = null;
+            try (InputStream in = getContentResolver().openInputStream(uri)) {
+                if (in == null) throw new Exception("нет доступа к файлу");
+                ByteArrayOutputStream out = new ByteArrayOutputStream();
+                byte[] buf = new byte[65536];
+                int n;
+                long total = 0;
+                while ((n = in.read(buf)) > 0) {
+                    total += n;
+                    if (total > MAX_FILE) throw new Exception("файл слишком большой");
+                    out.write(buf, 0, n);
+                }
+                text = new String(out.toByteArray(), StandardCharsets.UTF_8);
+            } catch (Exception e) {
+                error = e.getMessage() == null ? e.toString() : e.getMessage();
+            }
+            openedName = name;
+            openedText = text;
+            openedError = error;
+            runOnUiThread(this::notifyOpened);
+        }).start();
+    }
+
+    private void notifyOpened() {
+        if (!pageReady || (openedText == null && openedError == null)) return;
+        web.evaluateJavascript("window.__nmOpened && window.__nmOpened()", null);
+    }
+
+    private String displayName(Uri uri) {
+        try (Cursor c = getContentResolver().query(uri, new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+            if (c != null && c.moveToFirst()) return c.getString(0);
+        } catch (Exception ignored) {
+            // имя не важно
+        }
+        String last = uri.getLastPathSegment();
+        return last == null ? "" : last;
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQ_OPEN) {
+            if (resultCode == RESULT_OK && data != null && data.getData() != null) readUri(data.getData());
+            else web.evaluateJavascript("window.__nmOpenCancelled && window.__nmOpenCancelled()", null);
+        } else if (requestCode == REQ_SAVE) {
+            String text = pendingSaveText;
+            pendingSaveText = null;
+            if (resultCode != RESULT_OK || data == null || data.getData() == null || text == null) {
+                web.evaluateJavascript("window.__nmSaved && window.__nmSaved(false)", null);
+                return;
+            }
+            boolean ok;
+            try (OutputStream out = getContentResolver().openOutputStream(data.getData(), "wt")) {
+                out.write(text.getBytes(StandardCharsets.UTF_8));
+                ok = true;
+            } catch (Exception e) {
+                ok = false;
+            }
+            web.evaluateJavascript("window.__nmSaved && window.__nmSaved(" + ok + ")", null);
+        }
     }
 
     @Override
@@ -215,6 +313,97 @@ public class MainActivity extends Activity {
             openInSystem(Uri.parse(url));
         }
 
+        /** Страница загрузилась и готова принять открытый файл. */
+        @JavascriptInterface
+        public void ready() {
+            runOnUiThread(() -> {
+                pageReady = true;
+                notifyOpened();
+            });
+        }
+
+        @JavascriptInterface
+        public String takeOpenedName() {
+            return openedName;
+        }
+
+        /** Текст открытого файла; после вызова файл забывается. */
+        @JavascriptInterface
+        public String takeOpenedText() {
+            String t = openedText;
+            openedText = null;
+            return t;
+        }
+
+        @JavascriptInterface
+        public String takeOpenedError() {
+            String e = openedError;
+            openedError = null;
+            return e;
+        }
+
+        /** Выбор файла карты в памяти телефона. */
+        @JavascriptInterface
+        public void openFile() {
+            runOnUiThread(() -> {
+                Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                i.addCategory(Intent.CATEGORY_OPENABLE);
+                i.setType("*/*");
+                try {
+                    startActivityForResult(i, REQ_OPEN);
+                } catch (Exception e) {
+                    web.evaluateJavascript("window.__nmOpenCancelled && window.__nmOpenCancelled()", null);
+                }
+            });
+        }
+
+        /** «Поделиться» файлом: мессенджер, почта, диск. */
+        @JavascriptInterface
+        public boolean shareText(String fileName, String text) {
+            try {
+                File dir = new File(getCacheDir(), ShareProvider.DIR);
+                dir.mkdirs();
+                File[] old = dir.listFiles();
+                if (old != null) {
+                    for (File f : old) f.delete();
+                }
+                File f = new File(dir, safeName(fileName));
+                try (FileOutputStream out = new FileOutputStream(f)) {
+                    out.write(text.getBytes(StandardCharsets.UTF_8));
+                }
+                Uri uri = Uri.parse("content://" + ShareProvider.AUTHORITY + "/" + Uri.encode(f.getName()));
+                Intent send = new Intent(Intent.ACTION_SEND);
+                send.setType("application/json");
+                send.putExtra(Intent.EXTRA_STREAM, uri);
+                send.putExtra(Intent.EXTRA_SUBJECT, f.getName());
+                send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                Intent chooser = Intent.createChooser(send, "Отправить файл");
+                chooser.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                runOnUiThread(() -> startActivity(chooser));
+                return true;
+            } catch (Exception e) {
+                return false;
+            }
+        }
+
+        /** «Сохранить» файл в выбранную папку (например, «Загрузки»). Результат — в window.__nmSaved(ok). */
+        @JavascriptInterface
+        public void saveText(String fileName, String text) {
+            runOnUiThread(() -> {
+                pendingSaveText = text;
+                Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+                i.addCategory(Intent.CATEGORY_OPENABLE);
+                i.setType("application/json");
+                i.putExtra(Intent.EXTRA_TITLE, safeName(fileName));
+                try {
+                    startActivityForResult(i, REQ_SAVE);
+                } catch (Exception e) {
+                    pendingSaveText = null;
+                    web.evaluateJavascript("window.__nmSaved && window.__nmSaved(false)", null);
+                }
+            });
+        }
+
         @JavascriptInterface
         public void keepScreenOn(boolean on) {
             runOnUiThread(() -> {
@@ -225,6 +414,11 @@ public class MainActivity extends Activity {
                 }
             });
         }
+    }
+
+    private static String safeName(String name) {
+        String n = name == null ? "" : name.replaceAll("[\\\\/:*?\"<>|\\r\\n]", "_").trim();
+        return n.isEmpty() ? "karta-seti.json" : n;
     }
 
     private File dataFile(String key) {

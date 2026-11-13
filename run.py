@@ -1,20 +1,26 @@
 # -*- coding: utf-8 -*-
-"""Запуск сервера «Карта сети».
+"""Программа «Карта сети» для компьютера.
 
     python run.py                 обычный запуск (данные в папке data)
-    python run.py --port 8790     другой порт
     python run.py --demo          демонстрационный режим: отдельная база с примером сети (data-demo)
+    python run.py --no-window     не открывать окно программы (только для проверки)
+
+С версии 1.3 программа работает только на этом компьютере: она не принимает подключений по сети.
+Телефоны с ней не соединяются, обмен идёт файлами: бригады присылают файлы изменений,
+диспетчер загружает их в программу и рассылает бригадам файл карты.
 
 Нужен только Python 3.8+ — ничего доустанавливать не требуется.
 """
 import argparse
 import json
 import os
-import secrets
-import socket
+import re
+import shutil
+import subprocess
 import sys
 import threading
 import time
+import webbrowser
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)
@@ -22,48 +28,34 @@ sys.path.insert(0, ROOT)
 from core.app import App, SERVER_VERSION, make_server  # noqa: E402
 from core.store import Store  # noqa: E402
 
+HOST = "127.0.0.1"   # только этот компьютер; настройка host из прежних версий больше не действует
+
 DEFAULT_CONFIG = {
     "title": "Карта сети",
-    "host": "0.0.0.0",
+    "operator": "Диспетчер",
     "port": 8790,
-    "https_cert": "",
-    "https_key": "",
-    "backup_keep": 14,
+    "backup_keep": 30,
 }
 
 
 def load_config(data_dir):
     path = os.path.join(data_dir, "config.json")
     cfg = dict(DEFAULT_CONFIG)
+    saved = {}
     if os.path.exists(path):
         try:
             with open(path, "r", encoding="utf-8-sig") as f:
-                cfg.update(json.load(f))
+                saved = json.load(f)
         except Exception as e:
             print("Не удалось прочитать %s: %s. Работаю с настройками по умолчанию." % (path, e))
-    else:
+    for k in DEFAULT_CONFIG:
+        if k in saved:
+            cfg[k] = saved[k]
+    if set(saved) != set(DEFAULT_CONFIG):
+        # убираем настройки сети от прежних версий и дописываем новые
         with open(path, "w", encoding="utf-8") as f:
             json.dump(cfg, f, ensure_ascii=False, indent=2)
     return cfg
-
-
-def local_addresses():
-    found = []
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("10.255.255.255", 1))
-        found.append(s.getsockname()[0])
-        s.close()
-    except Exception:
-        pass
-    try:
-        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
-            ip = info[4][0]
-            if ip not in found and not ip.startswith("127."):
-                found.append(ip)
-    except Exception:
-        pass
-    return found
 
 
 class Log:
@@ -84,28 +76,10 @@ class Log:
                 pass
 
 
-def first_run(store, data_dir, log, demo):
-    """При первом запуске создаёт администратора и показывает его пароль."""
-    if store.count_users():
-        return
-    password = "demo-admin" if demo else secrets.token_urlsafe(8)
-    store.create_user("admin", "Администратор", "admin", password)
-    note = os.path.join(data_dir, "ПЕРВЫЙ ВХОД.txt")
-    with open(note, "w", encoding="utf-8") as f:
-        f.write(
-            "Карта сети — первый вход\r\n\r\n"
-            "Логин:  admin\r\nПароль: %s\r\n\r\n"
-            "Войдите, смените пароль (меню - Настройки) и заведите учётные записи сотрудникам\r\n"
-            "(меню - Пользователи). После этого файл можно удалить.\r\n" % password
-        )
-    log("Создан администратор: логин admin, пароль %s (также записан в «%s»)" % (password, note))
-
-
 def seed_demo(store):
     """Небольшая выдуманная сеть для знакомства с программой."""
     if store.snapshot()["objects"]:
         return
-    admin = store.list_users()[0]
     nodes = [
         ("n1", "ОУ Центральный", "core", "ok", 58.5215, 31.2755, "ул. Примерная, 1"),
         ("n2", "УА Северный", "aggregation", "ok", 58.5650, 31.2800, "ул. Северная, 12"),
@@ -129,27 +103,55 @@ def seed_demo(store):
     for i, a, b, typ, status in links:
         ops.append({"op_id": "demo-" + i, "id": "demo-" + i, "kind": "link", "action": "put",
                     "patch": {"a": "demo-" + a, "b": "demo-" + b, "type": typ, "status": status}})
-    store.apply_ops(admin, ops)
+    store.apply_ops({"id": None, "name": "Демо"}, ops)
 
 
 def backup_loop(store, data_dir, keep, log):
-    """Раз в сутки сохраняет копию базы в data/backups и удаляет старые копии."""
+    """Раз в сутки сохраняет копию базы в data/backups; хранит последние копии каждого вида."""
     folder = os.path.join(data_dir, "backups")
     os.makedirs(folder, exist_ok=True)
+    daily = re.compile(r"^netmap-\d{4}-\d{2}-\d{2}\.db$")
     while True:
         try:
-            name = "netmap-%s.db" % time.strftime("%Y-%m-%d")
-            target = os.path.join(folder, name)
+            target = os.path.join(folder, "netmap-%s.db" % time.strftime("%Y-%m-%d"))
             if not os.path.exists(target):
                 store.backup(target)
                 log("Резервная копия базы: %s" % target)
-            copies = sorted(f for f in os.listdir(folder) if f.startswith("netmap-") and f.endswith(".db"))
-            for old in copies[:-max(1, int(keep))]:
-                os.remove(os.path.join(folder, old))
-            store.prune_applied_ops()
+            names = sorted(os.listdir(folder))
+            for group in ([n for n in names if daily.match(n)],
+                          [n for n in names if n.startswith("netmap-before-import-") and n.endswith(".db")]):
+                for old in group[:-max(1, int(keep))]:
+                    os.remove(os.path.join(folder, old))
         except Exception as e:
             log("Не удалось сделать резервную копию: %s" % e)
         time.sleep(3600)
+
+
+def open_window(url):
+    """Открывает программу отдельным окном (Edge или Chrome в режиме приложения), иначе — в браузере."""
+    if os.name == "nt":
+        candidates = []
+        for base in (os.environ.get("ProgramFiles(x86)"), os.environ.get("ProgramFiles"), os.environ.get("LOCALAPPDATA")):
+            if base:
+                candidates += [os.path.join(base, "Microsoft", "Edge", "Application", "msedge.exe"),
+                               os.path.join(base, "Google", "Chrome", "Application", "chrome.exe")]
+        for exe in candidates:
+            if os.path.exists(exe):
+                try:
+                    subprocess.Popen([exe, "--app=" + url, "--start-maximized"], close_fds=True)
+                    return
+                except Exception:
+                    pass
+    else:
+        for name in ("chromium", "chromium-browser", "google-chrome", "microsoft-edge"):
+            exe = shutil.which(name)
+            if exe:
+                try:
+                    subprocess.Popen([exe, "--app=" + url], close_fds=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    return
+                except Exception:
+                    pass
+    webbrowser.open(url)
 
 
 def main():
@@ -157,56 +159,54 @@ def main():
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
-    ap = argparse.ArgumentParser(description="Сервер «Карта сети»")
+    ap = argparse.ArgumentParser(description="Карта сети")
     ap.add_argument("--port", type=int)
-    ap.add_argument("--host")
     ap.add_argument("--data", help="папка с базой и настройками")
     ap.add_argument("--demo", action="store_true", help="демонстрационный режим с примером сети")
+    ap.add_argument("--no-window", action="store_true", help="не открывать окно программы")
     args = ap.parse_args()
 
     data_dir = os.path.abspath(args.data or os.path.join(ROOT, "data-demo" if args.demo else "data"))
     os.makedirs(data_dir, exist_ok=True)
     cfg = load_config(data_dir)
-    host = args.host or cfg.get("host") or "0.0.0.0"
-    port = args.port or int(cfg.get("port") or 8790)
+    port = args.port or int(cfg.get("port") or 8790) + (1 if args.demo and not args.port else 0)
+    url = "http://%s:%d/" % (HOST, port)
 
     log = Log(os.path.join(data_dir, "server.log"))
     store = Store(os.path.join(data_dir, "netmap.db"))
-    first_run(store, data_dir, log, args.demo)
     if args.demo:
         seed_demo(store)
 
     app = App(store, os.path.join(ROOT, "web"), os.path.join(ROOT, "apk"),
-              title=cfg.get("title") or "Карта сети", log=log)
-    cert, key = cfg.get("https_cert") or "", cfg.get("https_key") or ""
-    use_https = bool(cert and key)
+              title=cfg.get("title") or "Карта сети", log=log, local=True,
+              operator=str(cfg.get("operator") or "Диспетчер"), backup_dir=os.path.join(data_dir, "backups"))
     try:
-        server = make_server(app, host, port, cert if use_https else None, key if use_https else None)
-    except OSError as e:
-        log("Не удалось занять порт %d: %s. Возможно, сервер уже запущен." % (port, e))
-        return 1
+        server = make_server(app, HOST, port)
+    except OSError:
+        # программа уже запущена — просто открываем её окно
+        print("Программа уже запущена, открываю её окно.")
+        if not args.no_window:
+            open_window(url)
+        return 0
 
-    threading.Thread(target=backup_loop, args=(store, data_dir, cfg.get("backup_keep", 14), log), daemon=True).start()
+    threading.Thread(target=backup_loop, args=(store, data_dir, cfg.get("backup_keep", 30), log), daemon=True).start()
 
-    scheme = "https" if use_https else "http"
     print()
-    print("  Карта сети — сервер %s%s" % (SERVER_VERSION, "  [ДЕМО]" if args.demo else ""))
+    print("  Карта сети %s%s" % (SERVER_VERSION, "  [ДЕМО]" if args.demo else ""))
     print("  Данные: %s" % data_dir)
-    print("  На этом компьютере:  %s://localhost:%d" % (scheme, port))
-    for ip in local_addresses():
-        print("  В локальной сети:    %s://%s:%d" % (scheme, ip, port))
-    print("  Из интернета — по вашему внешнему адресу и проброшенному порту %d." % port)
-    if not use_https:
-        print("  Внимание: без HTTPS пароли и данные идут по сети открытым текстом (см. README).")
-    print("  Остановить сервер: Ctrl+C или закрыть это окно.")
+    print("  Окно программы: %s" % url)
+    print("  Программа работает только на этом компьютере, по сети к ней подключиться нельзя.")
+    print("  Пока это окно открыто, программа работает. Закрыть программу: закройте это окно.")
     print()
-    log("Сервер запущен на %s:%d" % (host, port))
+    log("Программа запущена%s" % (" (демо)" if args.demo else ""))
+    if not args.no_window:
+        threading.Timer(0.6, open_window, args=(url,)).start()
     try:
         server.serve_forever(poll_interval=0.5)
     except KeyboardInterrupt:
         pass
     finally:
-        log("Сервер остановлен")
+        log("Программа остановлена")
         server.server_close()
         store.close()
     return 0

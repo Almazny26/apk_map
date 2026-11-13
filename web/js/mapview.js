@@ -35,7 +35,12 @@
     myPos: null
   };
 
-  var map = null, touch = false, linkLayerIds = [], watchId = null, follow = false, dirty = false;
+  /** Толщина линии по масштабу: тонкая на обзоре, заметная вблизи. extra — добавка для подложки и подсветки. */
+  function W(extra) {
+    return ['interpolate', ['linear'], ['zoom'], 5, 1.6 + extra * 0.5, 10, 2.6 + extra * 0.8, 14, 4 + extra, 18, 6 + extra];
+  }
+
+  var map = null, touch = false, hiddenLink = null, linkLayerIds = [], watchId = null, follow = false, dirty = false;
 
   M.savePrefs = NM.debounce(function () { NM.kv.set('prefs', M.prefs); }, 800);
 
@@ -144,12 +149,12 @@
     var round = { 'line-join': 'round', 'line-cap': 'round' };
     layers.push(
       { id: 'link-halo', type: 'line', source: 'links', filter: ['has', 'halo'], layout: round,
-        paint: { 'line-color': ['get', 'halo'], 'line-width': 13, 'line-opacity': 0.45 } },
+        paint: { 'line-color': ['get', 'halo'], 'line-width': W(11), 'line-opacity': 0.45 } },
       { id: 'link-case', type: 'line', source: 'links', layout: round,
-        paint: { 'line-color': '#ffffff', 'line-width': 7.5, 'line-opacity': 0.85 } },
+        paint: { 'line-color': '#ffffff', 'line-width': W(3.5), 'line-opacity': 0.85 } },
       // сюда (перед sel-link) вставляются слои линий по видам, см. buildLinkLayers
       { id: 'sel-link', type: 'line', source: 'sel', filter: ['==', ['geometry-type'], 'LineString'], layout: round,
-        paint: { 'line-color': BLUE, 'line-width': 15, 'line-opacity': 0.32 } },
+        paint: { 'line-color': BLUE, 'line-width': W(11), 'line-opacity': 0.3 } },
       { id: 'sel-node', type: 'circle', source: 'sel', filter: ['==', ['geometry-type'], 'Point'],
         paint: { 'circle-radius': 19, 'circle-color': BLUE, 'circle-opacity': 0.18, 'circle-stroke-color': BLUE, 'circle-stroke-width': 3 } },
       { id: 'me-acc', type: 'fill', source: 'me', filter: ['==', ['geometry-type'], 'Polygon'],
@@ -160,8 +165,9 @@
       { id: 'labels', type: 'symbol', source: 'nodes', minzoom: 11.8,
         layout: { 'icon-image': ['get', 'label'], 'icon-anchor': 'left', 'icon-offset': [14, 0], 'icon-padding': 3,
           visibility: M.prefs.labels ? 'visible' : 'none' } },
-      { id: 'edit-case', type: 'line', source: 'edit', layout: round, paint: { 'line-color': '#ffffff', 'line-width': 9, 'line-opacity': 0.95 } },
-      { id: 'edit-line', type: 'line', source: 'edit', layout: round, paint: { 'line-color': BLUE, 'line-width': 4.5 } },
+      { id: 'edit-hit', type: 'line', source: 'edit', layout: round, paint: { 'line-color': BLUE, 'line-width': 34, 'line-opacity': 0.01 } },
+      { id: 'edit-case', type: 'line', source: 'edit', layout: round, paint: { 'line-color': '#ffffff', 'line-width': W(4.5), 'line-opacity': 0.95 } },
+      { id: 'edit-line', type: 'line', source: 'edit', layout: round, paint: { 'line-color': BLUE, 'line-width': W(1) } },
       { id: 'draft-case', type: 'line', source: 'draft', filter: ['==', ['geometry-type'], 'LineString'], layout: round,
         paint: { 'line-color': '#ffffff', 'line-width': 8, 'line-opacity': 0.9 } },
       { id: 'draft-line', type: 'line', source: 'draft', filter: ['==', ['get', 'kind'], 'fixed'], layout: round,
@@ -227,6 +233,7 @@
         if (d < bestD) { bestD = d; best = f.properties.id; }
       } else if (!link) link = f.properties.id;
     });
+    M.lastTap = [e.lngLat.lat, e.lngLat.lng];
     if (best || link) NM.emit('tap', best || link);
     else NM.emit('maptap', { lat: e.lngLat.lat, lng: e.lngLat.lng });
   }
@@ -237,7 +244,7 @@
     linkLayerIds = [];
     var types = D.settings.link_types || [], ids = types.map(function (t) { return t.id; });
     function add(id, filter, dash) {
-      var paint = { 'line-color': ['get', 'color'], 'line-width': 4, 'line-opacity': ['case', ['get', 'pending'], 0.65, 0.96] };
+      var paint = { 'line-color': ['get', 'color'], 'line-width': W(0), 'line-opacity': ['case', ['get', 'pending'], 0.7, 0.96] };
       if (dash) paint['line-dasharray'] = dash;
       map.addLayer({ id: id, type: 'line', source: 'links', filter: filter,
         layout: { 'line-join': 'round', 'line-cap': dash ? 'butt' : 'round' }, paint: paint }, 'sel-link');
@@ -279,7 +286,7 @@
       }));
     });
     D.view.forEach(function (o) {
-      if (o.kind !== 'link' || hidden(o)) return;
+      if (o.kind !== 'link' || hidden(o) || o.id === hiddenLink) return;
       var pts = D.linkPoints(o);
       if (!pts) return;
       var a = D.view.get(o.data.a), b = D.view.get(o.data.b);
@@ -313,6 +320,7 @@
   function drawSelection() {
     if (!M.ready) return;
     var o = M.selected && D.view.get(M.selected), feats = [];
+    if (o && o.id === hiddenLink) o = null;
     if (o && o.kind === 'node') feats.push(point([o.data.lat, o.data.lng]));
     else if (o) { var pts = D.linkPoints(o); if (pts) feats.push(line(pts)); }
     setData('sel', feats);
@@ -333,18 +341,43 @@
     map.fitBounds(b, { padding: pad || padding(), maxZoom: maxZoom || 15, duration: 450, bearing: map.getBearing() });
   };
 
-  /** Показывает объект на карте с учётом того, что часть экрана закрыта карточкой. */
-  M.focus = function (id, zoomIn) {
+  /** Свободная от панелей часть экрана (в пикселях карты). */
+  function freeArea() {
+    var p = padding(), c = map.getContainer();
+    return { left: p.left, top: p.top, right: c.clientWidth - p.right, bottom: c.clientHeight - p.bottom };
+  }
+
+  /**
+   * Сдвигает карту ровно настолько, чтобы точка не оказалась под карточкой. Масштаб не меняется.
+   */
+  M.keepVisible = function (p) {
+    if (!p) return;
+    var q = map.project(ll(p)), f = freeArea(), m = 36, dx = 0, dy = 0;
+    if (q.x < f.left + m) dx = q.x - (f.left + m); else if (q.x > f.right - m) dx = q.x - (f.right - m);
+    if (q.y < f.top + m) dy = q.y - (f.top + m); else if (q.y > f.bottom - m) dy = q.y - (f.bottom - m);
+    if (dx || dy) map.panBy([dx, dy], { duration: 320 });
+  };
+
+  /**
+   * Показывает объект, выбранный в списке или поиске: карта переезжает к нему, масштаб остаётся
+   * прежним (узел на обзорном масштабе приближается до улиц, иначе его не разглядеть).
+   */
+  M.focus = function (id) {
     var o = D.view.get(id);
     if (!o) return;
+    var p = padding(), offset = [(p.left - p.right) / 2, (p.top - p.bottom) / 2], center, zoom = map.getZoom();
     if (o.kind === 'node') {
-      var p = padding();
-      // смещаем центр так, чтобы узел оказался посередине свободной от панелей части экрана
-      map.easeTo({ center: [o.data.lng, o.data.lat], zoom: zoomIn ? Math.max(map.getZoom(), 14) : map.getZoom(),
-        offset: [(p.left - p.right) / 2, (p.top - p.bottom) / 2], duration: 450 });
+      center = [o.data.lng, o.data.lat];
+      if (zoom < 12) zoom = 15;
     } else {
-      M.fitPoints(D.linkPoints(o));
+      var pts = D.linkPoints(o);
+      if (!pts) return;
+      var b = new maplibregl.LngLatBounds();
+      pts.forEach(function (q) { b.extend(ll(q)); });
+      center = b.getCenter();
+      if (zoom < 9) { M.fitPoints(pts); return; }
     }
+    map.easeTo({ center: center, zoom: zoom, offset: offset, duration: 450 });
   };
 
   M.fitAll = function () {
@@ -403,29 +436,46 @@
   };
 
   // ------------------------------------------------------------------ редактор трассы
-  // Точки изгиба существуют только в режиме правки. Это перетаскиваемые маркеры: зажал и перенёс.
-  // Между соседними точками стоит бледная «средняя» точка: потянули её — появился новый изгиб.
+  // Точки изгиба существуют только в режиме правки. Зажал линию в любом месте и потянул — появилась
+  // новая точка изгиба и тянется вслед за пальцем. Готовые точки тоже перетаскиваются. Нажатие на точку
+  // выделяет её (убрать её можно кнопкой) — так точку не удалить случайно. Сама линия на время правки
+  // скрыта, видна только её редактируемая копия.
 
   var ed = null;
 
   function edPts() { return [ed.a].concat(ed.path, [ed.b]); }
   function edCopy() { return ed.path.map(function (p) { return [+p[0].toFixed(7), +p[1].toFixed(7)]; }); }
-  function mid(p, q) { return [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2]; }
 
-  function edMarker(p, cls) {
+  function edMarker(p, i) {
     var el = document.createElement('div');
-    el.className = 'nm-h ' + cls;
-    return new maplibregl.Marker({ element: el, draggable: true }).setLngLat(ll(p)).addTo(map);
+    el.className = 'nm-h v' + (i === ed.selected ? ' sel' : '');
+    var m = new maplibregl.Marker({ element: el, draggable: true }).setLngLat(ll(p)).addTo(map);
+    m.on('dragstart', function () { el.classList.add('drag'); ed.moved = true; });
+    m.on('drag', function () { var q = m.getLngLat(); ed.path[i] = [q.lat, q.lng]; edLine(); });
+    m.on('dragend', function () { el.classList.remove('drag'); ed.quietUntil = Date.now() + 350; edCommit(); });
+    el.addEventListener('click', function (e) {
+      e.stopPropagation();
+      if (Date.now() < ed.quietUntil) return;   // это было окончание перетаскивания, а не нажатие
+      edSelect(ed.selected === i ? null : i);
+    });
+    return m;
   }
 
-  function edSync(withMids) {
-    var pts = edPts();
-    setData('edit', [line(pts)]);
-    if (withMids) ed.mids.forEach(function (m, i) { m.setLngLat(ll(mid(pts[i], pts[i + 1]))); });
+  function edLine() { setData('edit', [line(edPts())]); }
+
+  function edBuild() {
+    ed.markers.forEach(function (m) { m.remove(); });
+    ed.markers = ed.path.map(edMarker);
+    edLine();
   }
 
-  function edChanged() {
-    // перестраиваем после того, как карта закончит обработку перетаскивания
+  function edSelect(i) {
+    ed.selected = i;
+    ed.markers.forEach(function (m, k) { m.getElement().classList.toggle('sel', k === i); });
+    ed.onSelect(i);
+  }
+
+  function edCommit() {
     setTimeout(function () {
       if (!ed) return;
       ed.path = edCopy();
@@ -434,63 +484,75 @@
     }, 0);
   }
 
-  function edClear() {
-    ed.verts.concat(ed.mids).forEach(function (m) { m.remove(); });
-    ed.verts = []; ed.mids = [];
+  // захват линии: нажали на линию — вставили точку в ближайший отрезок и тянем её, пока палец не отпустят
+  function edDown(e) {
+    if (!ed || ed.grab) return;
+    if (e.type === 'touchstart' && e.points && e.points.length !== 1) return;     // два пальца — это масштаб и поворот
+    var t = e.originalEvent && e.originalEvent.target;
+    if (t && t.closest && t.closest('.nm-h')) return;                             // точку тянет сам маркер
+    var f = map.queryRenderedFeatures(e.point, { layers: ['edit-hit'] });
+    if (!f.length) return;
+    e.preventDefault();                                                           // карта не едет вслед за пальцем
+    var p = [e.lngLat.lat, e.lngLat.lng], i = M.nearestSegment(edPts(), p);
+    ed.path.splice(i, 0, p);
+    ed.grab = { i: i, x: e.point.x, y: e.point.y };
+    edSelect(null);
+    edLine();
+    var el = document.createElement('div');
+    el.className = 'nm-h v drag';
+    ed.ghost = new maplibregl.Marker({ element: el }).setLngLat(e.lngLat).addTo(map);
+  }
+  function edMove(e) {
+    if (!ed || !ed.grab) return;
+    ed.path[ed.grab.i] = [e.lngLat.lat, e.lngLat.lng];
+    ed.ghost.setLngLat(e.lngLat);
+    edLine();
+  }
+  function edUp() {
+    if (!ed || !ed.grab) return;
+    ed.grab = null;
+    if (ed.ghost) { ed.ghost.remove(); ed.ghost = null; }
+    ed.quietUntil = Date.now() + 350;
+    edCommit();
   }
 
-  function edBuild() {
-    edClear();
-    var pts = edPts();
-    setData('edit', [line(pts)]);
-    for (var k = 0; k < pts.length - 1; k++) (function (i) {
-      var m = edMarker(mid(pts[i], pts[i + 1]), 'm');
-      m.on('dragstart', function () {
-        var p = m.getLngLat();
-        ed.path.splice(i, 0, [p.lat, p.lng]);
-        ed.mids.forEach(function (x) { if (x !== m) x.getElement().style.visibility = 'hidden'; });
-        m.getElement().classList.remove('m'); m.getElement().classList.add('v', 'drag');
-      });
-      m.on('drag', function () { var p = m.getLngLat(); ed.path[i] = [p.lat, p.lng]; edSync(false); });
-      m.on('dragend', function () { ed.quietUntil = Date.now() + 400; edChanged(); });
-      ed.mids.push(m);
-    })(k);
-    ed.path.forEach(function (p, i) {
-      var m = edMarker(p, 'v');
-      m.on('dragstart', function () { m.getElement().classList.add('drag'); });
-      m.on('drag', function () { var q = m.getLngLat(); ed.path[i] = [q.lat, q.lng]; edSync(true); });
-      m.on('dragend', function () { ed.quietUntil = Date.now() + 400; edChanged(); });
-      m.getElement().addEventListener('click', function (e) {
-        e.stopPropagation();
-        // сразу после перетаскивания браузер может прислать «нажатие» — это не просьба удалить точку
-        if (Date.now() < ed.quietUntil) return;
-        ed.path.splice(i, 1); edChanged();
-      });
-      ed.verts.push(m);
-    });
-  }
-
-  /** Включает правку трассы между точками a и b. onChange(path) вызывается после каждого изменения. */
-  M.editPath = function (a, b, path, onChange) {
+  /** Включает правку трассы между точками a и b линии linkId. */
+  M.editPath = function (linkId, a, b, path, onChange, onSelect) {
     M.stopEdit();
-    ed = { a: a, b: b, path: path.map(function (p) { return p.slice(); }), onChange: onChange, verts: [], mids: [], quietUntil: 0 };
+    ed = { a: a, b: b, path: path.map(function (p) { return p.slice(); }), onChange: onChange, onSelect: onSelect || function () {},
+      markers: [], selected: null, quietUntil: 0, grab: null, ghost: null };
+    hiddenLink = linkId;
+    rebuildNow();
     edBuild();
+    map.on('mousedown', edDown); map.on('touchstart', edDown);
+    map.on('mousemove', edMove); map.on('touchmove', edMove);
+    map.on('mouseup', edUp); map.on('touchend', edUp); map.on('touchcancel', edUp);
   };
   M.editSet = function (path) {
     if (!ed) return;
     ed.path = path.map(function (p) { return p.slice(); });
+    ed.selected = null;
     edBuild();
+    ed.onSelect(null);
   };
-  /** Добавляет точку изгиба в ближайший к нажатию отрезок. */
-  M.editInsert = function (p) {
-    if (!ed || Date.now() < ed.quietUntil) return;
-    ed.path.splice(M.nearestSegment(edPts(), [p.lat, p.lng]), 0, [p.lat, p.lng]);
-    edChanged();
+  M.editRemoveSelected = function () {
+    if (!ed || ed.selected === null) return;
+    ed.path.splice(ed.selected, 1);
+    ed.selected = null;
+    ed.onSelect(null);
+    edCommit();
   };
   M.stopEdit = function () {
     if (!ed) return;
-    edClear(); ed = null;
+    ed.markers.forEach(function (m) { m.remove(); });
+    if (ed.ghost) ed.ghost.remove();
+    map.off('mousedown', edDown); map.off('touchstart', edDown);
+    map.off('mousemove', edMove); map.off('touchmove', edMove);
+    map.off('mouseup', edUp); map.off('touchend', edUp); map.off('touchcancel', edUp);
+    ed = null;
+    hiddenLink = null;
     setData('edit', []);
+    rebuildNow();
   };
 
   // ------------------------------------------------------------------ моё местоположение

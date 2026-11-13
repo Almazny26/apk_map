@@ -16,8 +16,8 @@ from urllib.parse import parse_qs, urlsplit
 
 from .store import OpError, ROLES
 
-SERVER_VERSION = "1.0"
-MAX_BODY = 4 * 1024 * 1024
+SERVER_VERSION = "1.3"
+MAX_BODY = 64 * 1024 * 1024   # файлы изменений от бригад приходят одним запросом
 MAX_OPS_PER_REQUEST = 500
 
 mimetypes.add_type("application/vnd.android.package-archive", ".apk")
@@ -121,8 +121,14 @@ class LoginGuard:
 class App:
     """Всё, что нужно обработчику запросов: хранилище, подписчики, каталоги."""
 
-    def __init__(self, store, web_dir, apk_dir, title="Карта сети", log=None):
+    def __init__(self, store, web_dir, apk_dir, title="Карта сети", log=None, local=False, operator="Диспетчер",
+                 backup_dir=None):
         self.store = store
+        # Локальный режим (с 1.3): программа работает только на этом компьютере, без входа и без сети.
+        # Телефоны с ней не соединяются — обмен идёт файлами.
+        self.local = local
+        self.operator = operator
+        self.backup_dir = backup_dir
         self.web_dir = os.path.abspath(web_dir)
         self.apk_dir = os.path.abspath(apk_dir)
         self.title = title
@@ -170,6 +176,8 @@ def make_handler(app):
             pass  # стандартный построчный лог запросов не нужен; ошибки пишем сами
 
         def _cors(self):
+            if app.local:
+                return  # в локальном режиме чужим страницам в браузере доступ к программе не даём
             self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
             self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
@@ -217,7 +225,20 @@ def make_handler(app):
                 return auth[7:].strip()
             return (query.get("token") or [""])[0]
 
+        def _local_guard(self, method):
+            """Защита локальной программы от чужих страниц, открытых в том же браузере."""
+            host = (self.headers.get("Host") or "").split(":")[0].strip("[]").lower()
+            if host not in ("127.0.0.1", "localhost", "::1"):
+                raise HttpError(403, "forbidden", "Программа доступна только на этом компьютере")
+            origin = self.headers.get("Origin")
+            if origin and method != "GET":
+                o = urlsplit(origin).hostname or ""
+                if o.lower() not in ("127.0.0.1", "localhost", "::1"):
+                    raise HttpError(403, "forbidden", "Запрос с чужой страницы отклонён")
+
         def _user(self, query, role=None):
+            if app.local:
+                return {"id": None, "login": "local", "name": app.operator, "role": "admin"}, ""
             token = self._token(query)
             user = app.store.auth(token)
             if not user:
@@ -253,6 +274,8 @@ def make_handler(app):
             path = parts.path
             query = parse_qs(parts.query)
             try:
+                if app.local:
+                    self._local_guard(method)
                 if path.startswith("/api/"):
                     self._api(method, path[5:], query)
                 elif method == "GET":
@@ -279,6 +302,9 @@ def make_handler(app):
                 return self._json({
                     "app": "karta-seti",
                     "title": app.title,
+                    "local": app.local,
+                    "operator": app.operator if app.local else None,
+                    "map_id": store.map_id(),
                     "version": SERVER_VERSION,
                     "time": time.time(),
                     "apk": app.apk_info(),
@@ -346,6 +372,39 @@ def make_handler(app):
                     if changed:
                         app.hub.broadcast("change", {"rev": rev, "objects": changed})
                 return self._json({"results": results, "rev": rev})
+
+            if route == "map/export" and method == "GET":
+                self._user(query)
+                pkg = store.export_map(app.title)
+                app.log("Экспорт карты для бригад: %d объектов, ревизия %d" % (len(pkg["objects"]), pkg["rev"]))
+                return self._json(pkg)
+
+            if route == "changes/preview" and method == "POST":
+                self._user(query, role="editor")
+                files = self._body().get("files")
+                if not isinstance(files, list):
+                    raise HttpError(400, "bad_request", "Нет файлов")
+                pkgs = [f for f in files if isinstance(f, dict)]
+                return self._json({"files": store.preview_changes(pkgs), "total_new": store.count_new_ops(pkgs)})
+
+            if route == "changes/import" and method == "POST":
+                self._user(query, role="editor")
+                files = self._body().get("files")
+                if not isinstance(files, list):
+                    raise HttpError(400, "bad_request", "Нет файлов")
+                files = [f for f in files if isinstance(f, dict)]
+                if app.backup_dir:
+                    # перед загрузкой чужих правок — копия базы, чтобы можно было вернуться
+                    os.makedirs(app.backup_dir, exist_ok=True)
+                    store.backup(os.path.join(app.backup_dir, "netmap-before-import-%s.db" % time.strftime("%Y-%m-%d_%H-%M-%S")))
+                with app.ops_lock:
+                    report = store.import_changes(files)
+                    if report["changed"]:
+                        app.hub.broadcast("change", {"rev": report["rev"], "objects": report["changed"]})
+                app.log("Импорт изменений: файлов %d, применено %d, уже было %d, отклонено %d" % (
+                    len(files), report["applied"], report["already"], len(report["rejected"])))
+                report["changed"] = len(report["changed"])
+                return self._json(report)
 
             if route == "events" and method == "GET":
                 user, _ = self._user(query)
@@ -466,7 +525,8 @@ def make_handler(app):
 
 class Server(ThreadingHTTPServer):
     daemon_threads = True
-    allow_reuse_address = True
+    # на Windows этот флаг позволил бы второй копии программы занять тот же порт
+    allow_reuse_address = os.name != "nt"
     request_queue_size = 64
 
     def handle_error(self, request, client_address):
