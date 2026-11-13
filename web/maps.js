@@ -9,7 +9,11 @@
  *   - выбранная подложка запоминается (karta_map);
  *   - при первом запуске новой версии включается «Онлайн» (заказчик: «пусть карта прогружается
  *     из сети»); выключить можно той же галочкой;
- *   - внизу справа подпись источника карты (условие OpenStreetMap и Esri).
+ *   - внизу справа подпись источника карты (условие OpenStreetMap и Esri);
+ *   - офлайн-карта районов (3.0): файл karta-offline.pmtiles — векторные плитки OpenStreetMap
+ *     (Protomaps) до масштаба 15, страница рисует их сама до 19. Есть файл — он лежит под всеми
+ *     подложками (вместо вшитой карты 7–11), а без интернета «Схема» рисуется только из него.
+ *     Телефон отдаёт куски файла через KartaFiles.mapBytes, компьютер — через /api/mapbytes.
  */
 (function () {
   'use strict';
@@ -45,6 +49,8 @@
 
   var css = document.createElement('style');
   css.textContent =
+    // у приложения рамка у всех canvas (для графика профиля) — у плиток офлайн-карты она давала сетку
+    '.leaflet-tile-pane canvas{border:0!important;border-radius:0!important;background:none!important;padding:0!important;margin:0!important}' +
     '.leaflet-container .leaflet-control-attribution.nm-attr{display:block!important;font-size:10px;background:rgba(255,255,255,.75);padding:0 4px}' +
     'body.dark .leaflet-container .leaflet-control-attribution.nm-attr{background:rgba(0,0,0,.55);color:#ccc}' +
     'body.dark .leaflet-container .leaflet-control-attribution.nm-attr a{color:#9ecbff}';
@@ -88,6 +94,76 @@
     if (!online) { $('online').checked = true; applyOnline(true); }
   }
 
+
+  // ---------------------------------------------------------------- офлайн-карта районов (векторная)
+
+  var vec = null, vecInfo = { present: false };
+  function b64(s) {
+    var bin = atob(s), u = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+    return u.buffer;
+  }
+  function makeSource(key) {
+    var kf = window.KartaFiles;
+    if (kf && kf.mapBytes) return {
+      getKey: function () { return key; },
+      getBytes: function (o, l) {
+        var s = kf.mapBytes(o, l);
+        return s == null || s === '' ? Promise.reject(new Error('нет данных')) : Promise.resolve({ data: b64(s) });
+      }
+    };
+    return {
+      getKey: function () { return key; },
+      getBytes: function (o, l, signal) {
+        return fetch('/api/mapbytes?o=' + o + '&l=' + l, { signal: signal }).then(function (r) {
+          if (!r.ok) throw new Error('нет данных');
+          return r.arrayBuffer();
+        }).then(function (d) { return { data: d }; });
+      }
+    };
+  }
+  function vecLayer(info) {
+    if (!window.protomapsL) return null;
+    var src = new protomapsL.PmtilesSource('karta-offline.pmtiles', true);
+    src.p.source = makeSource('karta-offline-' + info.size + '-' + (info.mtime || 0));
+    var bg = '#e2dfda';   // фон плитки — цвет суши (море рисуется поверх)
+    var l = protomapsL.leafletLayer({ url: src.p, flavor: 'light', lang: 'ru', maxDataZoom: 15, minZoom: 3, maxZoom: 19,
+      attribution: '&copy; участники OpenStreetMap' });
+    l.backgroundColor = bg;
+    l.setZIndex && l.setZIndex(0);
+    return l;
+  }
+  function readInfo(cb) {
+    var kf = window.KartaFiles;
+    if (kf && kf.mapSize) {
+      var size = +kf.mapSize() || 0;
+      cb(size > 0 ? { present: true, size: size, mtime: +(kf.mapDate ? kf.mapDate() : 0) || 0 } : { present: false });
+      return;
+    }
+    if (window.KartaPC) {
+      fetch('/api/map').then(function (r) { return r.json(); }).then(cb, function () { cb({ present: false }); });
+      return;
+    }
+    cb({ present: false });
+  }
+  function loadVec(then) {
+    readInfo(function (info) {
+      var same = vec && vecInfo.present && info.present && info.size === vecInfo.size && info.mtime === vecInfo.mtime;
+      vecInfo = info;
+      if (!same) {
+        if (vec && map.hasLayer(vec)) map.removeLayer(vec);
+        vec = info.present ? vecLayer(info) : null;
+      }
+      useMap(current);
+      if (then) then(info);
+    });
+  }
+  /* нет связи: галочка «Онлайн» снята или телефон/компьютер сообщает, что сети нет */
+  function noNet() { return !online || navigator.onLine === false; }
+  window.addEventListener('online', function () { useMap(current); });
+  window.addEventListener('offline', function () { useMap(current); });
+  window.KartaMap = { info: function () { return vecInfo; }, reload: loadVec };
+
   // ---------------------------------------------------------------- выбор подложки
 
   $('mapOff').textContent = 'Схема';
@@ -100,10 +176,13 @@
       current = kind === 'sat' || kind === 'hyb' ? kind : 'off';
       if (current !== 'off' && !online) { $('online').checked = true; applyOnline(true); }
       [osm, sat, hybrid].forEach(function (l) { if (map.hasLayer(l)) map.removeLayer(l); });
-      // вшитая схема — подложка только для схемы: под снимками она даёт лоскуты
-      if (current === 'off' && !map.hasLayer(offlineTiles)) offlineTiles.addTo(map);
-      if (current !== 'off' && map.hasLayer(offlineTiles)) map.removeLayer(offlineTiles);
-      var layer = current === 'sat' ? sat : current === 'hyb' ? hybrid : (online ? osm : null);
+      // подложка: офлайн-карта районов, если файл есть; иначе вшитая схема 7–11 (только под «Схемой»:
+      // под снимками она давала лоскуты)
+      var under = vec || (current === 'off' ? offlineTiles : null);
+      [offlineTiles, vec].forEach(function (l) { if (l && l !== under && map.hasLayer(l)) map.removeLayer(l); });
+      if (under && !map.hasLayer(under)) under.addTo(map);
+      // без связи «Схема» рисуется только из файла — без лоскутов из запаса
+      var layer = current === 'sat' ? sat : current === 'hyb' ? hybrid : (online && !(vec && noNet()) ? osm : null);
       if (layer) { layer.addTo(map); if (typeof watchTiles === 'function') watchTiles(layer); }
       $('mapOff').classList.toggle('on', current === 'off');
       $('mapSat').classList.toggle('on', current === 'sat');
@@ -112,7 +191,7 @@
       if (current === 'sat') status('Спутник. Нужен интернет, открытое ранее видно и без него.');
       else if (current === 'hyb') status('Гибрид: снимок и подписи. Нужен интернет, открытое ранее видно и без него.');
       else if (online) status('Схема: подробная карта из интернета. Открытое ранее видно и без связи.');
-      else status('Без интернета: офлайн-карта (Крым, Херсон, Запорожье, Ставрополье) и то, что открывали раньше.');
+      else status(vec ? 'Без интернета: офлайн-карта районов.' : 'Без интернета: офлайн-карта (Крым, Херсон, Запорожье, Ставрополье) и то, что открывали раньше.');
     } finally { busy = false; }
   };
 
@@ -131,5 +210,6 @@
   });
 
   useMap(current);
+  loadVec();
   status('');
 })();

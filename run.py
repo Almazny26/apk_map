@@ -19,6 +19,7 @@ import math
 import mimetypes
 import os
 import re
+import gzip
 import shutil
 import struct
 import subprocess
@@ -37,7 +38,7 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 WEB = os.path.join(ROOT, "web")
 HOST = "127.0.0.1"
 PORT = 8790
-VERSION = "2.8"
+VERSION = "3.0"
 
 mimetypes.add_type("text/javascript", ".js")
 mimetypes.add_type("application/json", ".json")
@@ -307,6 +308,357 @@ class TileCache:
 
 # ------------------------------------------------------------------ сервер
 
+# ------------------------------------------------------------------ офлайн-карта (векторная, PMTiles)
+
+class OfflineMap:
+    """Подробная карта районов без интернета: файл map/karta-offline.pmtiles.
+
+    Данные — OpenStreetMap в виде векторных плиток (сборка Protomaps, масштаб до 15; страница
+    рисует их сама и увеличивает до 19). Скачивать такие файлы целиком разрешено (лицензия ODbL,
+    подпись «© OpenStreetMap»), в отличие от плиток-картинок с серверов OSM, Esri и Яндекса.
+    Программа вырезает из сборки всей Земли нужные районы: читает каталог плиток по частям
+    (HTTP Range) и скачивает только плитки этих районов: Херсонская и Запорожская области — около
+    200 МБ, все четыре района — около 420 МБ.
+    """
+
+    BUILDS = "https://build-metadata.protomaps.dev/builds.json"
+    BASE = "https://build.protomaps.com/"
+    REGIONS = {
+        # название: (юг, запад, север, восток)
+        "Крым": (44.35, 32.45, 46.25, 36.70),
+        "Херсонская область": (45.85, 31.45, 47.65, 35.40),
+        "Запорожская область": (46.05, 34.15, 48.20, 37.35),
+        "Ставропольский край": (43.60, 40.80, 46.30, 45.80),
+    }
+    DEFAULT = ["Херсонская область", "Запорожская область"]   # заказчик: эти две — полностью
+    MAXZOOM = 15
+    UA = "KartaSeti/%s (offline map extract; https://github.com/Almazny26/apk_map)"
+
+    def __init__(self, path, log=print):
+        self.path = path
+        self.log = log
+        self.lock = threading.Lock()
+        self.job = None          # ход скачивания: {state, done, total, error, ...}
+        self._fh = None
+
+    # --- чтение готового файла (страница просит куски по смещению)
+
+    def info(self):
+        try:
+            st = os.stat(self.path)
+            with open(self.path, "rb") as f:
+                head = f.read(127)
+            if head[:7] != b"PMTiles":
+                raise ValueError
+            meta = {}
+            try:
+                with open(self.path + ".json", encoding="utf-8") as f:
+                    meta = json.load(f)
+            except Exception:
+                pass
+            return {"present": True, "size": st.st_size, "mtime": int(st.st_mtime * 1000),
+                    "regions": meta.get("regions"), "build": meta.get("build")}
+        except Exception:
+            return {"present": False}
+
+    def read(self, offset, length):
+        with self.lock:
+            if self._fh is None:
+                self._fh = open(self.path, "rb")
+            self._fh.seek(offset)
+            return self._fh.read(length)
+
+    def close(self):
+        with self.lock:
+            if self._fh:
+                self._fh.close()
+                self._fh = None
+
+    # --- формат PMTiles v3
+
+    @staticmethod
+    def tileid(z, x, y):
+        acc = ((1 << (2 * z)) - 1) // 3
+        tx, ty = x, y
+        for a in range(z - 1, -1, -1):
+            s = 1 << a
+            rx, ry = s & tx, s & ty
+            acc += ((3 * rx) ^ ry) << a
+            if ry == 0:
+                if rx != 0:
+                    tx, ty = s - 1 - tx, s - 1 - ty
+                tx, ty = ty, tx
+        return acc
+
+    @staticmethod
+    def _varint(buf, pos):
+        v = shift = 0
+        while True:
+            b = buf[pos]
+            pos += 1
+            v |= (b & 0x7F) << shift
+            if b < 0x80:
+                return v, pos
+            shift += 7
+
+    @staticmethod
+    def _put_varint(out, v):
+        while v >= 0x80:
+            out.append((v & 0x7F) | 0x80)
+            v >>= 7
+        out.append(v)
+
+    @classmethod
+    def read_dir(cls, raw):
+        buf, pos = raw, 0
+        n, pos = cls._varint(buf, pos)
+        ids, last = [], 0
+        for _ in range(n):
+            d, pos = cls._varint(buf, pos)
+            last += d
+            ids.append(last)
+        runs, lens, offs = [], [], []
+        for _ in range(n):
+            v, pos = cls._varint(buf, pos)
+            runs.append(v)
+        for _ in range(n):
+            v, pos = cls._varint(buf, pos)
+            lens.append(v)
+        for i in range(n):
+            v, pos = cls._varint(buf, pos)
+            offs.append(offs[i - 1] + lens[i - 1] if v == 0 and i > 0 else v - 1)
+        return list(zip(ids, runs, offs, lens))
+
+    @classmethod
+    def write_dir(cls, entries):
+        out = bytearray()
+        cls._put_varint(out, len(entries))
+        last = 0
+        for e in entries:
+            cls._put_varint(out, e[0] - last)
+            last = e[0]
+        for e in entries:
+            cls._put_varint(out, e[1])
+        for e in entries:
+            cls._put_varint(out, e[3])
+        for i, e in enumerate(entries):
+            if i > 0 and e[2] == entries[i - 1][2] + entries[i - 1][3]:
+                cls._put_varint(out, 0)
+            else:
+                cls._put_varint(out, e[2] + 1)
+        return gzip.compress(bytes(out), mtime=0)
+
+    @staticmethod
+    def find(entries, tid):
+        lo, hi = 0, len(entries) - 1
+        while lo <= hi:
+            k = (lo + hi) >> 1
+            c = tid - entries[k][0]
+            if c > 0:
+                lo = k + 1
+            elif c < 0:
+                hi = k - 1
+            else:
+                return entries[k]
+        if hi >= 0:
+            e = entries[hi]
+            if e[1] == 0 or tid - e[0] < e[1]:
+                return e
+        return None
+
+    # --- скачивание
+
+    def _get(self, url, start=None, length=None, timeout=60):
+        h = {"User-Agent": self.UA % VERSION}
+        if start is not None:
+            h["Range"] = "bytes=%d-%d" % (start, start + length - 1)
+        for attempt in range(4):
+            try:
+                with urllib.request.urlopen(urllib.request.Request(url, headers=h), timeout=timeout) as r:
+                    data = r.read()
+                if start is not None and len(data) != length:
+                    raise IOError("неполный ответ")
+                return data
+            except Exception:
+                if attempt == 3:
+                    raise
+                time.sleep(2 + attempt * 3)
+
+    def status(self):
+        j = dict(self.job) if self.job else {"state": "idle"}
+        j.update(self.info())
+        return j
+
+    def start(self, regions=None):
+        if self.job and self.job.get("state") == "running":
+            return False
+        regions = [r for r in (regions or self.DEFAULT) if r in self.REGIONS] or list(self.DEFAULT)
+        self.job = {"state": "running", "stage": "подготовка", "done": 0, "total": 0, "regions": regions, "started": time.time()}
+        threading.Thread(target=self._run, args=(regions,), daemon=True).start()
+        return True
+
+    def _run(self, regions):
+        try:
+            self.download(regions)
+            self.job.update(state="done", stage="готово")
+            self.log("Офлайн-карта скачана: %s" % ", ".join(regions))
+        except Exception as e:
+            self.job.update(state="error", error=str(e) or e.__class__.__name__)
+            self.log("Офлайн-карта не скачана: %s\n%s" % (e, traceback.format_exc()))
+
+    def download(self, regions, build=None, progress=None):
+        job = self.job if self.job is not None else {}
+        def stage(text, done=0, total=0):
+            job.update(stage=text, done=done, total=total)
+            if progress:
+                progress(text, done, total)
+        stage("выбор сборки")
+        if not build:
+            builds = json.loads(self._get(self.BUILDS).decode("utf-8"))
+            build = sorted(b["key"] for b in builds if b.get("key", "").endswith(".pmtiles"))[-1]
+        url = self.BASE + build
+        head = self._get(url, 0, 127)
+        if head[:7] != b"PMTiles" or head[7] != 3:
+            raise IOError("неизвестный формат сборки")
+        (root_off, root_len, meta_off, meta_len, leaf_off, leaf_len, data_off, data_len,
+         _a, _b, _c) = struct.unpack_from("<11Q", head, 8)
+        internal, tile_comp, tile_type = head[97], head[98], head[99]
+        if internal != 2:
+            raise IOError("неизвестное сжатие каталога")
+        dirs = {}
+        def directory(off, ln):
+            key = (off, ln)
+            if key not in dirs:
+                dirs[key] = self.read_dir(gzip.decompress(self._get(url, off, ln)))
+            return dirs[key]
+        def lookup(tid):
+            off, ln = root_off, root_len
+            for _ in range(4):
+                e = self.find(directory(off, ln), tid)
+                if not e:
+                    return None
+                if e[1] > 0:
+                    return e
+                off, ln = leaf_off + e[2], e[3]
+            return None
+
+        def tx(lon, z):
+            return min((1 << z) - 1, max(0, int((lon + 180) / 360 * (1 << z))))
+        def ty(lat, z):
+            r = math.radians(lat)
+            return min((1 << z) - 1, max(0, int((1 - math.log(math.tan(r) + 1 / math.cos(r)) / math.pi) / 2 * (1 << z))))
+
+        stage("каталог плиток")
+        wanted = {}
+        boxes = [self.REGIONS[r] for r in regions]
+        for z in range(0, self.MAXZOOM + 1):
+            for (s, w, n, e) in boxes:
+                for x in range(tx(w, z), tx(e, z) + 1):
+                    for y in range(ty(n, z), ty(s, z) + 1):
+                        tid = self.tileid(z, x, y)
+                        if tid in wanted:
+                            continue
+                        ent = lookup(tid)
+                        if ent:
+                            wanted[tid] = (ent[2], ent[3])
+        # куски исходного файла: одинаковые плитки (море) хранятся один раз
+        uniq = sorted(set(wanted.values()))
+        total = sum(ln for _, ln in uniq)
+        chunks, cur = [], None
+        for off, ln in uniq:
+            if cur and off - (cur[0] + cur[1]) <= 32768 and cur[1] + ln <= 4 * 1024 * 1024:
+                cur[1] = max(cur[1], off + ln - cur[0])
+                cur[2].append((off, ln))
+            else:
+                cur = [off, ln, [(off, ln)]]
+                chunks.append(cur)
+
+        tmp = self.path + ".part"
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        newoff, pos, done = {}, 0, 0
+        stage("скачивание", 0, total)
+        from concurrent.futures import ThreadPoolExecutor
+        with open(tmp + ".data", "wb") as out, ThreadPoolExecutor(6) as pool:
+            futures = []
+            for c in chunks:
+                futures.append((c, pool.submit(self._get, url, data_off + c[0], c[1], 120)))
+                # не держать в памяти слишком много: ждём, если в очереди больше 24 кусков
+                while len(futures) > 24:
+                    pos, done = self._write_chunk(futures.pop(0), out, newoff, pos, done)
+                    stage("скачивание", done, total)
+            while futures:
+                pos, done = self._write_chunk(futures.pop(0), out, newoff, pos, done)
+                stage("скачивание", done, total)
+
+        stage("сборка файла", total, total)
+        entries = []
+        for tid in sorted(wanted):
+            o, ln = newoff[wanted[tid]], wanted[tid][1]
+            last = entries[-1] if entries else None
+            if last and last[0] + last[1] == tid and last[2] == o and last[3] == ln:
+                last[1] += 1
+            else:
+                entries.append([tid, 1, o, ln])
+        root, leaves = self._dirs([tuple(e) for e in entries])
+        meta = self._get(url, meta_off, meta_len) if meta_len else gzip.compress(b"{}", mtime=0)
+        b = [self.REGIONS[r] for r in regions]
+        S, W, N, E = min(x[0] for x in b), min(x[1] for x in b), max(x[2] for x in b), max(x[3] for x in b)
+        hdr = bytearray(b"PMTiles\x03")
+        r_off = 127
+        m_off = r_off + len(root)
+        l_off = m_off + len(meta)
+        d_off = l_off + len(leaves)
+        n_tiles = sum(e[1] for e in entries)
+        hdr += struct.pack("<11Q", r_off, len(root), m_off, len(meta), l_off, len(leaves), d_off, pos,
+                           n_tiles, len(entries), len(newoff))
+        hdr += bytes([0, 2, tile_comp, tile_type, 0, self.MAXZOOM])
+        e7 = lambda v: int(round(v * 1e7))
+        hdr += struct.pack("<iiii", e7(W), e7(S), e7(E), e7(N))
+        hdr += bytes([8]) + struct.pack("<ii", e7((W + E) / 2), e7((S + N) / 2))
+        assert len(hdr) == 127
+        with open(tmp, "wb") as f:
+            f.write(hdr)
+            f.write(root)
+            f.write(meta)
+            f.write(leaves)
+            with open(tmp + ".data", "rb") as src:
+                shutil.copyfileobj(src, f, 1024 * 1024)
+        os.remove(tmp + ".data")
+        self.close()
+        os.replace(tmp, self.path)
+        with open(self.path + ".json", "w", encoding="utf-8") as f:
+            json.dump({"regions": regions, "build": build, "maxzoom": self.MAXZOOM, "made": int(time.time())}, f, ensure_ascii=False)
+        return {"tiles": n_tiles, "bytes": os.path.getsize(self.path), "build": build}
+
+    @staticmethod
+    def _write_chunk(item, out, newoff, pos, done):
+        c, fut = item
+        data = fut.result()
+        for off, ln in c[2]:
+            newoff[(off, ln)] = pos
+            out.write(data[off - c[0]:off - c[0] + ln])
+            pos += ln
+            done += ln
+        return pos, done
+
+    def _dirs(self, entries):
+        """Каталог: корень до 16 КБ, остальное — в листовых каталогах."""
+        root = self.write_dir(entries)
+        if len(root) <= 16384 - 127:
+            return root, b""
+        size = 4096
+        while True:
+            leaves, root_entries = bytearray(), []
+            for i in range(0, len(entries), size):
+                part = self.write_dir(entries[i:i + size])
+                root_entries.append((entries[i][0], 0, len(leaves), len(part)))
+                leaves += part
+            root = self.write_dir(root_entries)
+            if len(root) <= 16384 - 127:
+                return root, bytes(leaves)
+            size *= 2
+
+
 class HttpError(Exception):
     def __init__(self, status, message):
         super().__init__(message)
@@ -411,6 +763,21 @@ def make_handler(app):
             if route == "elev" and self.command == "POST":
                 b = self._body(limit=1024 * 1024)
                 return self._json(fetch_elevations(app.dem, str(b.get("locs") or ""), bool(b.get("online"))))
+            if route == "map" and self.command == "GET":
+                return self._json(app.offline.status())
+            if route == "map" and self.command == "POST":
+                b = self._body(limit=64 * 1024)
+                ok = app.offline.start(b.get("regions") if isinstance(b.get("regions"), list) else None)
+                return self._json({"ok": ok, "regions": list(OfflineMap.REGIONS)})
+            if route == "mapbytes" and self.command == "GET":
+                q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+                try:
+                    o, n = int(q["o"][0]), int(q["l"][0])
+                except Exception:
+                    raise HttpError(400, "Неверный запрос")
+                if o < 0 or not (0 < n <= 16 * 1024 * 1024) or not app.offline.info()["present"]:
+                    raise HttpError(404, "Офлайн-карты нет")
+                return self._send(200, app.offline.read(o, n), "application/octet-stream", {"Cache-Control": "no-store"})
             if route == "info":
                 return self._json({"app": "karta-seti", "version": VERSION})
             if route == "quit" and self.command == "POST" and self.headers.get("X-Karta") == "quit":
@@ -451,9 +818,6 @@ def make_handler(app):
                 # значок окна — тот же, что у приложения на телефоне
                 html = html.replace("</head>", '<link rel="icon" type="image/png" sizes="192x192" href="icon.png">\n'
                                     '<link rel="shortcut icon" href="favicon.ico">\n</head>', 1)
-                # оформление для компьютера (окна, строка состояния) — после кода приложения и exchange.js
-                ui = '<script src="pc-ui.js?v=%s"></script>\n' % VERSION
-                html = html.replace("</body>", ui + "</body>", 1) if "</body>" in html else html + ui
                 body = html.encode("utf-8")
             if ctype.startswith("text/") or ctype in ("application/json", "text/javascript"):
                 ctype += "; charset=utf-8"
@@ -478,6 +842,7 @@ class App:
         self.tilecache = TileCache(data_dir, self.state)
         self.quit = None
         self.log = log
+        self.offline = OfflineMap(os.path.join(ROOT, "map", "karta-offline.pmtiles"), log)
         try:
             self.dem = Dem(os.path.join(WEB, "dem", "dem.bin"))
         except Exception as e:
@@ -624,7 +989,20 @@ def main():
     ap.add_argument("--port", type=int, default=PORT)
     ap.add_argument("--data", help="папка с данными")
     ap.add_argument("--no-window", action="store_true")
+    ap.add_argument("--offline-map", nargs="*", metavar="РАЙОН",
+                    help="скачать офлайн-карту районов в map/karta-offline.pmtiles и выйти")
+    ap.add_argument("--map-file", help="куда сохранить офлайн-карту (для --offline-map)")
     args = ap.parse_args()
+    if args.offline_map is not None:
+        om = OfflineMap(os.path.abspath(args.map_file or os.path.join(ROOT, "map", "karta-offline.pmtiles")))
+        last = [0]
+        def show(text, done, total):
+            if time.time() - last[0] > 3 or done == total:
+                last[0] = time.time()
+                print("  %s %s" % (text, "%d из %d МБ" % (done >> 20, total >> 20) if total else ""), flush=True)
+        r = om.download(args.offline_map or OfflineMap.DEFAULT, progress=show)
+        print("Готово: %(tiles)d плиток, %(bytes)d байт, сборка %(build)s" % r)
+        return 0
 
     data_dir = os.path.abspath(args.data or os.path.join(ROOT, "data"))
     os.makedirs(data_dir, exist_ok=True)

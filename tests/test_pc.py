@@ -64,10 +64,10 @@ class ServerTest(unittest.TestCase):
     def test_page_and_tiles(self):
         html = self.get("/").read().decode("utf-8")
         self.assertIn('<script src="leaflet/leaflet.js"></script>\n<script src="pc.js', html)
-        self.assertIn('exchange.js', html)
+        self.assertIn('app.js', html)
         self.assertLess(html.index("pc.js"), html.index("const map = L.map"))
-        self.assertLess(html.index("exchange.js"), html.index("pc-ui.js"))
-        self.assertLess(html.index("pc-ui.js"), html.index("</body>"))
+        self.assertLess(html.index("const map = L.map"), html.index("app.js"))
+        self.assertNotIn("pc-ui.js", html)
         self.assertIn('rel="icon"', html)
         with self.get("/favicon.ico") as r:
             self.assertGreater(len(r.read()), 1000)
@@ -110,6 +110,27 @@ class ServerTest(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as cm:
             self.post("/api/state", {"wf_nodes": "[]"}, {"Origin": "http://evil.example"})
         self.assertEqual(cm.exception.code, 403)
+
+
+class OfflineMapTest(unittest.TestCase):
+    def test_tileid(self):
+        t = run.OfflineMap.tileid
+        self.assertEqual([t(0, 0, 0), t(1, 0, 0), t(1, 0, 1), t(1, 1, 1), t(1, 1, 0), t(2, 0, 0)], [0, 1, 2, 3, 4, 5])
+
+    def test_directory_roundtrip_and_file(self):
+        om = run.OfflineMap
+        entries = [(i * 3, 1 + i % 2, i * 100, 100) for i in range(5000)]
+        self.assertEqual(om.read_dir(__import__("gzip").decompress(om.write_dir(entries))), entries)
+        self.assertEqual(om.find(entries, 3 * 7)[0], 21)
+        self.assertEqual(om.find(entries, 3 * 7 + 1)[0], 21)     # run_length 2
+        self.assertIsNone(om.find(entries, 3 * 6 + 1))             # run_length 1
+        with tempfile.TemporaryDirectory() as d:
+            m = om(os.path.join(d, "map", "karta-offline.pmtiles"), lambda *a: None)
+            self.assertFalse(m.info()["present"])
+            rnd = __import__("random").Random(1)
+            root, leaves = m._dirs([(i * 7, 1, rnd.randrange(10 ** 9), rnd.randrange(1, 90000)) for i in range(200000)])
+            self.assertLessEqual(len(root), 16384 - 127)
+            self.assertTrue(leaves)
 
 
 if __name__ == "__main__":

@@ -40,6 +40,8 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.io.BufferedInputStream;
+import java.io.RandomAccessFile;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
@@ -480,9 +482,22 @@ public class MainActivity extends Activity {
     private void readUri(Uri uri) {
         new Thread(() -> {
             String name = displayName(uri), text = null, error = null;
-            try (InputStream in = getContentResolver().openInputStream(uri)) {
-                if (in == null) {
+            try (InputStream raw = getContentResolver().openInputStream(uri)) {
+                if (raw == null) {
                     throw new IOException("нет доступа к файлу");
+                }
+                BufferedInputStream in = new BufferedInputStream(raw, 65536);
+                // файл офлайн-карты (PMTiles) — не обмен данными, а подложка: копируется к приложению
+                in.mark(16);
+                byte[] magic = new byte[7];
+                int got = 0, k;
+                while (got < 7 && (k = in.read(magic, got, 7 - got)) > 0) {
+                    got += k;
+                }
+                in.reset();
+                if (got == 7 && "PMTiles".equals(new String(magic, StandardCharsets.US_ASCII))) {
+                    importMap(in, name);
+                    return;
                 }
                 ByteArrayOutputStream out = new ByteArrayOutputStream();
                 byte[] buf = new byte[65536];
@@ -504,6 +519,63 @@ public class MainActivity extends Activity {
             openedError = error;
             runOnUiThread(this::notifyOpened);
         }).start();
+    }
+
+    // ------------------------------------------------------------------ офлайн-карта (3.0)
+
+    private File mapFile() {
+        return new File(getFilesDir(), "karta-offline.pmtiles");
+    }
+
+    private RandomAccessFile mapRaf = null;
+
+    private synchronized void closeMap() {
+        if (mapRaf != null) {
+            try {
+                mapRaf.close();
+            } catch (IOException ignored) {
+                // всё равно
+            }
+            mapRaf = null;
+        }
+    }
+
+    /** Копирует файл карты к приложению; страница получает __kartaMap(ok, сообщение). */
+    private void importMap(InputStream in, String name) {
+        File tmp = new File(getFilesDir(), "karta-offline.pmtiles.part");
+        String msg;
+        boolean ok = false;
+        try (OutputStream out = new FileOutputStream(tmp)) {
+            byte[] buf = new byte[1 << 20];
+            int n;
+            long total = 0, shown = 0;
+            while ((n = in.read(buf)) > 0) {
+                out.write(buf, 0, n);
+                total += n;
+                if (total - shown >= 20L << 20) {
+                    shown = total;
+                    final long mb = total >> 20;
+                    runOnUiThread(() -> js("window.__kartaMapProgress && window.__kartaMapProgress(" + mb + ")"));
+                }
+            }
+            out.flush();
+            closeMap();
+            File dst = mapFile();
+            if (dst.exists() && !dst.delete()) {
+                throw new IOException("не удалось заменить старую карту");
+            }
+            if (!tmp.renameTo(dst)) {
+                throw new IOException("не удалось сохранить карту");
+            }
+            ok = true;
+            msg = (total >> 20) + " МБ";
+        } catch (Exception e) {
+            tmp.delete();
+            msg = e.getMessage() == null ? e.toString() : e.getMessage();
+        }
+        final String m = JSONObject.quote(msg);
+        final boolean r = ok;
+        runOnUiThread(() -> js("window.__kartaMap && window.__kartaMap(" + r + "," + m + ")"));
     }
 
     private void notifyOpened() {
@@ -764,6 +836,48 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public String platform() {
             return "android";
+        }
+
+        /** Размер файла офлайн-карты, 0 — карты нет. */
+        @JavascriptInterface
+        public double mapSize() {
+            File f = mapFile();
+            return f.isFile() ? f.length() : 0;
+        }
+
+        @JavascriptInterface
+        public double mapDate() {
+            File f = mapFile();
+            return f.isFile() ? f.lastModified() : 0;
+        }
+
+        /** Кусок файла карты в base64 (страница рисует карту сама). */
+        @JavascriptInterface
+        public String mapBytes(double offset, double length) {
+            synchronized (MainActivity.this) {
+                try {
+                    if (mapRaf == null) {
+                        mapRaf = new RandomAccessFile(mapFile(), "r");
+                    }
+                    int n = (int) Math.min(length, 16 << 20);
+                    byte[] b = new byte[n];
+                    mapRaf.seek((long) offset);
+                    mapRaf.readFully(b);
+                    return Base64.encodeToString(b, Base64.NO_WRAP);
+                } catch (Exception e) {
+                    closeMap();
+                    return "";
+                }
+            }
+        }
+
+        /** Удалить офлайн-карту. */
+        @JavascriptInterface
+        public boolean mapDelete() {
+            synchronized (MainActivity.this) {
+                closeMap();
+                return mapFile().delete();
+            }
         }
     }
 }
