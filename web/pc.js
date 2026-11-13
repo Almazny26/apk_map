@@ -4,8 +4,9 @@
  * после Leaflet, до кода приложения. Код приложения при этом не меняется:
  *   - данные приложения (localStorage) хранятся в файле data\state.json на компьютере: при запуске
  *     они загружаются оттуда, при каждом изменении — записываются обратно;
- *   - офлайн-карта https://local.tiles/... берётся у программы на компьютере;
- *   - без галочки «Онлайн» карты из интернета не загружаются (как на телефоне);
+ *   - офлайн-карта https://local.tiles/... и онлайн-карты (схема, спутник, подписи) идут через
+ *     программу на компьютере: просмотренное хранится на диске и видно без интернета;
+ *   - без галочки «Онлайн» программа в интернет не ходит (как на телефоне);
  *   - AndroidBridge: рельеф считает программа на компьютере по тому же файлу dem.bin,
  *     PNG профиля сохраняется в «Загрузки».
  */
@@ -58,19 +59,23 @@
 
   // ---------------------------------------------------------------- карты
 
-  var BLANK = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+  // офлайн-карта и онлайн-карты идут через программу на компьютере: она хранит просмотренные
+  // плитки в data\tilecache и показывает их без интернета; в интернет ходит только при «Онлайн»
+  var REWRITE = [
+    [/^https:\/\/local\.tiles\//, '/'],
+    [/^https:\/\/tile\.openstreetmap\.org\/.*/, '/tc/osm/{z}/{x}/{y}'],
+    [/^https:\/\/server\.arcgisonline\.com\/ArcGIS\/rest\/services\/World_Imagery\/.*/, '/tc/sat/{z}/{x}/{y}'],
+    [/^https:\/\/core-renderer-tiles\.maps\.yandex\.net\/tiles\?l=skl.*/, '/tc/skl/{z}/{x}/{y}']
+  ];
   if (window.L && L.tileLayer) {
     var tileLayer = L.tileLayer;
     L.tileLayer = function (url, opts) {
-      if (typeof url === 'string' && url.indexOf('https://local.tiles/') === 0) url = '/' + url.slice('https://local.tiles/'.length);
+      if (typeof url === 'string') {
+        for (var i = 0; i < REWRITE.length; i++) {
+          if (REWRITE[i][0].test(url)) { url = url.replace(REWRITE[i][0], REWRITE[i][1]); break; }
+        }
+      }
       return tileLayer.call(this, url, opts);
-    };
-    var getTileUrl = L.TileLayer.prototype.getTileUrl;
-    L.TileLayer.prototype.getTileUrl = function (coords) {
-      var u = getTileUrl.call(this, coords);
-      // как на телефоне: без галочки «Онлайн» в интернет не ходим
-      if (/^https?:/.test(u) && localStorage.getItem('wf_online') !== '1') return BLANK;
-      return u;
     };
   }
 

@@ -35,7 +35,7 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 WEB = os.path.join(ROOT, "web")
 HOST = "127.0.0.1"
 PORT = 8790
-VERSION = "2.1"
+VERSION = "2.3"
 
 mimetypes.add_type("text/javascript", ".js")
 mimetypes.add_type("application/json", ".json")
@@ -175,6 +175,100 @@ class Tiles:
             return self.zip.read(name)
 
 
+# ------------------------------------------------------------------ карта из интернета с запасом на диске
+
+class TileCache:
+    """Плитки онлайн-карт через программу: что открывали с интернетом, остаётся в data/tilecache и
+    показывается без связи. Запрос в интернет — только при галочке «Онлайн» (wf_online в state.json)."""
+
+    SOURCES = {
+        "osm": "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+        "sat": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        "skl": "https://core-renderer-tiles.maps.yandex.net/tiles?l=skl&x={x}&y={y}&z={z}&scale=1&lang=ru_RU&projection=web_mercator",
+    }
+    FRESH = 30 * 86400          # обновлять плитку не чаще раза в 30 дней
+    LIMIT = 1024 ** 3           # не больше 1 ГБ на диске
+    UA = "KartaSeti/%s (Windows; https://github.com/Almazny26/apk_map)"
+
+    def __init__(self, data_dir, state):
+        self.dir = os.path.join(data_dir, "tilecache")
+        self.state = state
+        self._online = (0.0, False)
+
+    def online(self):
+        t, v = self._online
+        if time.time() - t > 2:
+            try:
+                v = (self.state.load() or {}).get("wf_online") == "1"
+            except Exception:
+                v = False
+            self._online = (time.time(), v)
+        return v
+
+    def get(self, src, z, x, y):
+        """→ (данные, тип) или None."""
+        if src not in self.SOURCES or not (0 <= z <= 20) or not (0 <= x < 2 ** z) or not (0 <= y < 2 ** z):
+            return None
+        path = os.path.join(self.dir, src, str(z), str(x), str(y))
+        cached = None
+        if os.path.exists(path):
+            with open(path, "rb") as f:
+                cached = f.read()
+            if time.time() - os.path.getmtime(path) < self.FRESH or not self.online():
+                return cached, self.kind(cached)
+        elif not self.online():
+            return None
+        try:
+            url = self.SOURCES[src].format(z=z, x=x, y=y)
+            req = urllib.request.Request(url, headers={"User-Agent": self.UA % VERSION})
+            with urllib.request.urlopen(req, timeout=12) as r:
+                data = r.read(4 * 1024 * 1024)
+            if len(data) < 60 or self.kind(data) is None:
+                raise ValueError("не картинка")
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            tmp = path + ".%d.tmp" % threading.get_ident()
+            with open(tmp, "wb") as f:
+                f.write(data)
+            os.replace(tmp, path)
+            return data, self.kind(data)
+        except Exception:
+            return (cached, self.kind(cached)) if cached else None
+
+    @staticmethod
+    def kind(data):
+        if data[:8] == b"\x89PNG\r\n\x1a\n":
+            return "image/png"
+        if data[:3] == b"\xff\xd8\xff":
+            return "image/jpeg"
+        if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+            return "image/webp"
+        return None
+
+    def prune(self):
+        """Если плиток больше лимита — удалить самые старые до 80 % лимита."""
+        files, total = [], 0
+        for root, _, names in os.walk(self.dir):
+            for n in names:
+                p = os.path.join(root, n)
+                try:
+                    st = os.stat(p)
+                except OSError:
+                    continue
+                files.append((st.st_mtime, st.st_size, p))
+                total += st.st_size
+        if total <= self.LIMIT:
+            return
+        files.sort()
+        for _, size, p in files:
+            if total <= self.LIMIT * 0.8:
+                break
+            try:
+                os.remove(p)
+                total -= size
+            except OSError:
+                pass
+
+
 # ------------------------------------------------------------------ сервер
 
 class HttpError(Exception):
@@ -283,6 +377,12 @@ def make_handler(app):
 
         def _static(self, path):
             rel = path.lstrip("/") or "index.html"
+            m = re.match(r"^tc/([a-z]+)/(\d+)/(\d+)/(\d+)$", rel)
+            if m:
+                got = app.tilecache.get(m.group(1), int(m.group(2)), int(m.group(3)), int(m.group(4)))
+                if got is None:
+                    return self._send(404, b"", "text/plain")
+                return self._send(200, got[0], got[1] or "image/png", {"Cache-Control": "max-age=3600"})
             if rel.startswith("tiles/"):
                 data = app.tiles.get(rel[6:])
                 if data is not None:
@@ -302,6 +402,9 @@ def make_handler(app):
                 tag = '<script src="leaflet/leaflet.js"></script>'
                 inject = tag + '\n<script src="pc.js?v=%s"></script>' % VERSION
                 html = html.replace(tag, inject, 1) if tag in html else html.replace("<head>", "<head>\n" + inject, 1)
+                # значок окна — тот же, что у приложения на телефоне
+                html = html.replace("</head>", '<link rel="icon" type="image/png" sizes="192x192" href="icon.png">\n'
+                                    '<link rel="shortcut icon" href="favicon.ico">\n</head>', 1)
                 # оформление для компьютера (окна, строка состояния) — после кода приложения и exchange.js
                 ui = '<script src="pc-ui.js?v=%s"></script>\n' % VERSION
                 html = html.replace("</body>", ui + "</body>", 1) if "</body>" in html else html + ui
@@ -326,6 +429,7 @@ class App:
     def __init__(self, data_dir, log):
         self.state = State(data_dir)
         self.tiles = Tiles()
+        self.tilecache = TileCache(data_dir, self.state)
         self.log = log
         try:
             self.dem = Dem(os.path.join(WEB, "dem", "dem.bin"))
@@ -369,6 +473,28 @@ def backup_loop(data_dir, log, keep=30):
         time.sleep(3600)
 
 
+def make_shortcut(data_dir, log):
+    """Один раз: ярлык «Карта сети» на рабочем столе со значком приложения (только Windows)."""
+    mark = os.path.join(data_dir, "shortcut.done")
+    if os.name != "nt" or os.path.exists(mark):
+        return
+    script = (
+        "$d=[Environment]::GetFolderPath('Desktop');"
+        "$s=(New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $d 'Карта сети.lnk'));"
+        "$s.TargetPath=%s;$s.WorkingDirectory=%s;$s.IconLocation=%s;$s.WindowStyle=7;"
+        "$s.Description='Карта сети';$s.Save()"
+    ) % tuple("'" + v.replace("'", "''") + "'" for v in (
+        os.path.join(ROOT, "Карта сети.bat"), ROOT, os.path.join(WEB, "favicon.ico") + ",0"))
+    try:
+        subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+                       timeout=30, capture_output=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        with open(mark, "w", encoding="utf-8") as f:
+            f.write(time.strftime("%d.%m.%Y %H:%M"))
+        log("Создан ярлык «Карта сети» на рабочем столе")
+    except Exception as e:
+        log("Не удалось создать ярлык: %s" % e)
+
+
 def open_window(url):
     """Отдельное окно программы (Edge или Chrome в режиме приложения), иначе — браузер."""
     if os.name == "nt":
@@ -402,13 +528,17 @@ def main():
     log = Log(os.path.join(data_dir, "program.log"))
     url = "http://%s:%d/" % (HOST, args.port)
     try:
-        server = Server((HOST, args.port), make_handler(App(data_dir, log)))
+        the_app = App(data_dir, log)
+        server = Server((HOST, args.port), make_handler(the_app))
     except OSError:
         print("Программа уже запущена, открываю её окно.")
         if not args.no_window:
             open_window(url)
         return 0
     threading.Thread(target=backup_loop, args=(data_dir, log), daemon=True).start()
+    threading.Thread(target=the_app.tilecache.prune, daemon=True).start()
+    if not args.no_window:
+        threading.Thread(target=make_shortcut, args=(data_dir, log), daemon=True).start()
     print()
     print("  Карта сети %s (основа — «WiFi Френель»)" % VERSION)
     print("  Данные: %s" % os.path.join(data_dir, "state.json"))

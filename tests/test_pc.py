@@ -68,6 +68,9 @@ class ServerTest(unittest.TestCase):
         self.assertLess(html.index("pc.js"), html.index("const map = L.map"))
         self.assertLess(html.index("exchange.js"), html.index("pc-ui.js"))
         self.assertLess(html.index("pc-ui.js"), html.index("</body>"))
+        self.assertIn('rel="icon"', html)
+        with self.get("/favicon.ico") as r:
+            self.assertGreater(len(r.read()), 1000)
         with self.get("/tiles/8/159/91.png") as r:
             self.assertEqual(r.headers.get_content_type(), "image/png")
         with self.assertRaises(urllib.error.HTTPError):
@@ -80,6 +83,21 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(json.loads(self.get("/api/state").read())["wf_nodes"], "[]")
         with self.assertRaises(urllib.error.HTTPError):
             self.post("/api/state", {"wf_nodes": 5})
+
+    def test_tile_cache_offline(self):
+        """Без «Онлайн» онлайн-карта берётся только из запаса на диске, в интернет программа не ходит."""
+        png = b"\x89PNG\r\n\x1a\n" + b"\0" * 100
+        folder = os.path.join(self.tmp.name, "tilecache", "osm", "5", "17")
+        os.makedirs(folder, exist_ok=True)
+        with open(os.path.join(folder, "11"), "wb") as f:
+            f.write(png)
+        self.post("/api/state", {"wf_online": "0"})
+        with self.get("/tc/osm/5/17/11") as r:
+            self.assertEqual((r.headers.get_content_type(), r.read()), ("image/png", png))
+        for bad in ("/tc/osm/5/17/12", "/tc/evil/5/1/1", "/tc/osm/3/99/1"):
+            with self.assertRaises(urllib.error.HTTPError) as cm:
+                self.get(bad)
+            self.assertEqual(cm.exception.code, 404, bad)
 
     def test_elev(self):
         r = json.loads(self.post("/api/elev", {"locs": "44.95210,34.10240", "online": False}).read())

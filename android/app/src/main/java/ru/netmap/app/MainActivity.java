@@ -62,6 +62,9 @@ import java.util.concurrent.TimeUnit;
  *   - «Поделиться» файлом данных (мессенджер, почта) и «Сохранить» в выбранную папку;
  *   - открытие файла: выбор в памяти телефона или «Открыть с помощью» из мессенджера.
  *
+ * Добавлено для подложки (web/maps.js): плитки карт из интернета (OpenStreetMap, Esri, подписи
+ * Яндекса) проходят через TileCache — просмотренное хранится в памяти приложения и видно без связи.
+ *
  * Добавлено для карты сети (web/net.js): KartaFiles.locate() — местоположение по GPS или сети,
  * ответ в window.__kartaGeo(широта, долгота, точность, ошибка).
  */
@@ -76,6 +79,7 @@ public class MainActivity extends Activity {
 
     private WebView web;
     private Dem dem;
+    private TileCache tileCache;
 
     private volatile String openedName = null;
     private volatile String openedText = null;
@@ -93,6 +97,8 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        tileCache = new TileCache(new File(getFilesDir(), "tilecache"));
+        new Thread(tileCache::prune).start();
         web = new WebView(this);
         setContentView(web);
         WebSettings s = web.getSettings();
@@ -175,6 +181,9 @@ public class MainActivity extends Activity {
                 } catch (IOException e) {
                     return super.shouldInterceptRequest(view, request);
                 }
+            }
+            if (host != null && TileCache.handles(host)) {
+                return tileCache.get(url.toString(), isOnline());
             }
             if (isOnline()) {
                 return null;
