@@ -44,6 +44,7 @@ final class OfflineTiles {
         long dataOff;
         int internal;
         int tileComp;
+        int tileType;       // 1 — векторные плитки (схема), иначе картинки (снимки)
         int minZoom;
         int maxZoom;
         double w;
@@ -152,6 +153,7 @@ final class OfflineTiles {
         p.dataOff = b.getLong(56);
         p.internal = h[97];
         p.tileComp = h[98];
+        p.tileType = h[99];
         p.minZoom = h[100];
         p.maxZoom = h[101];
         p.w = b.getInt(102) / 1e7;
@@ -255,8 +257,13 @@ final class OfflineTiles {
         return acc;
     }
 
-    /** Плитка (распакованная) из первого файла, где она есть; null — нет. */
+    /** Плитка схемы (распакованная) из первого файла, где она есть; null — нет. */
     byte[] tile(int z, int x, int y) {
+        return tile(z, x, y, false);
+    }
+
+    /** Плитка: sat — снимки (картинка), иначе схема. */
+    byte[] tile(int z, int x, int y, boolean sat) {
         List<Pm> list;
         synchronized (this) {
             list = files;
@@ -266,7 +273,7 @@ final class OfflineTiles {
         }
         long id = tileId(z, x, y);
         for (Pm p : list) {
-            if (z < p.minZoom || z > p.maxZoom) {
+            if ((p.tileType == 1) == sat || z < p.minZoom || z > p.maxZoom) {
                 continue;
             }
             try {
@@ -298,6 +305,7 @@ final class OfflineTiles {
                 o.put("slug", p.slug);
                 o.put("size", p.size);
                 o.put("mtime", p.mtime);
+                o.put("kind", p.tileType == 1 ? "map" : "sat");
                 o.put("bounds", new JSONArray(new double[]{p.w, p.s, p.e, p.n}));
                 a.put(o);
             }

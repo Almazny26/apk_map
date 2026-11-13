@@ -939,6 +939,13 @@ public class MainActivity extends Activity {
             return b == null ? "" : Base64.encodeToString(b, Base64.NO_WRAP);
         }
 
+        /** Плитка загруженных снимков района (JPEG) в base64; пусто — такой плитки нет. */
+        @JavascriptInterface
+        public String satTile(int z, int x, int y) {
+            byte[] b = offline.tile(z, x, y, true);
+            return b == null ? "" : Base64.encodeToString(b, Base64.NO_WRAP);
+        }
+
         /** Файл из набора приложения (шрифты подписей карты) в base64; пусто — файла нет. */
         @JavascriptInterface
         public String asset(String path) {
@@ -984,6 +991,18 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public boolean mapDelete(String slug) {
             return offline.delete(slug);
+        }
+
+        /** Строка состояния Android в цвет шапки: светлая тема — белая с тёмными значками, тёмная — тёмная. */
+        @JavascriptInterface
+        public void setDark(boolean dark) {
+            runOnUiThread(() -> {
+                getWindow().setStatusBarColor(dark ? 0xFF1C1C1E : 0xFFFFFFFF);
+                View d = getWindow().getDecorView();
+                int f = d.getSystemUiVisibility();
+                f = dark ? (f & ~View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR) : (f | View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
+                d.setSystemUiVisibility(f);
+            });
         }
 
         /** Не гасить экран, пока приложение открыто (настройка). */

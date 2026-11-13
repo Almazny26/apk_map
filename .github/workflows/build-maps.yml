@@ -1,11 +1,19 @@
 name: Офлайн-карты районов
 
-# Вырезает районы из сборки Protomaps (данные OpenStreetMap) и кладёт файлы в выпуск «maps».
-# Оттуда их скачивают приложение на телефоне и программа на компьютере («Карта без интернета»).
-# Запуск: вручную, раз в месяц, или при изменении этого файла.
+# Собирает файлы «Карты без интернета» и кладёт их в выпуск «maps». Оттуда их скачивают приложение
+# на телефоне и программа на компьютере.
+#   <район>.pmtiles      — схема: вырезается из сборки Protomaps (данные OpenStreetMap);
+#   <район>-sat.pmtiles  — снимки Sentinel-2 cloudless (EOX, CC BY 4.0), масштаб 0–14.
+# Схема: вручную, раз в месяц и при изменении этого файла. Снимки не меняются (съёмка 2016 года),
+# поэтому собираются, только если файла в выпуске ещё нет или при ручном запуске с «sat».
 
 on:
   workflow_dispatch:
+    inputs:
+      sat:
+        description: 'Пересобрать и снимки'
+        type: boolean
+        default: false
   schedule:
     - cron: '0 3 1 * *'
   push:
@@ -38,5 +46,35 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release view maps >/dev/null 2>&1 || gh release create maps --title "Офлайн-карты районов" \
-            --notes "Файлы офлайн-карты для «Карты сети»: Херсонская и Запорожская области, Крым. Данные © участники OpenStreetMap (ODbL), сборка Protomaps. Обновляются автоматически."
+            --notes "Файлы офлайн-карты для «Карты сети»: Херсонская и Запорожская области, Крым. Схема: данные © участники OpenStreetMap (ODbL), сборка Protomaps. Снимки: Sentinel-2 cloudless — https://s2maps.eu by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2016 & 2017), CC BY 4.0."
           gh release upload maps out/*.pmtiles --clobber
+
+  sat:
+    needs: maps
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        region: [kherson, zaporozhye, crimea]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Нужно ли собирать
+        id: need
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ inputs.sat }}" = "true" ] || ! gh release view maps --json assets -q '.assets[].name' | grep -qx "${{ matrix.region }}-sat.pmtiles"; then
+            echo "build=1" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Собрать снимки района
+        if: steps.need.outputs.build == '1'
+        run: |
+          mkdir -p out
+          python3 run.py --offline-sat "${{ matrix.region }}" --map-file "out/${{ matrix.region }}-sat.pmtiles"
+          ls -la out
+      - name: Выложить в выпуск «maps»
+        if: steps.need.outputs.build == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload maps out/*.pmtiles --clobber

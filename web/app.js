@@ -230,7 +230,7 @@
   var DEF = { theme: localStorage.getItem('wf_theme') === 'dark' ? 'dark' : 'light', ui: 1, mapDim: true,
     nodeLbl: 'zoom', lineLbl: 'zoom', nodeSize: 1, lineW: 1, linePts: 'near', scale: true, zoomBtns: true,
     start: 'view', tap: true, longMs: 550, vibro: true, coords: 'sk42', pcPanel: 380, pcCoords: true,
-    ptSize: 1, ptLbl: 'near', lineLen: false, snap: true, keep: false, schema: 'auto' };
+    ptSize: 1, ptLbl: 'near', lineLen: false, snap: true, keep: false, schema: 'auto', rot: true };
   var S = (function () {
     var r = {}, st = {};
     try { st = JSON.parse(localStorage.getItem(SET)) || {}; } catch (e) { st = {}; }
@@ -259,6 +259,7 @@
     'body.dark .leaflet-tile-pane .karta-vec{filter:brightness(1.75) contrast(.92)}',
     'body.ap-nocoords #apCoords{display:none}',
     '@media (max-width:899px){body.ap-nozoom .ap-ctl .grp.zoom{display:none}}',
+    '.ap-ctl .grp.north{display:none}body.ap-rot .ap-ctl .grp.north{display:flex}.ap-ctl .grp.north svg{width:26px;height:26px}',
     '.ap-ctl .grp.undo{display:none}body.ap-edit.ap-canundo:not(.ap-tool) .ap-ctl .grp.undo{display:flex}',
     '#apHint{position:fixed;left:50%;top:38%;transform:translate(-50%,-50%);z-index:900;max-width:min(320px,80vw);text-align:center;background:var(--panel);color:var(--text);'+
       'border-radius:16px;padding:14px 18px;box-shadow:var(--shadow);font:14px/1.4 var(--font);pointer-events:none;display:none}',
@@ -357,9 +358,11 @@
     '#apDlg{position:fixed;inset:0;z-index:2100;background:rgba(0,0,0,.45);display:none;align-items:center;justify-content:center}',
     '#apDlg.show{display:flex}',
     '#apDlgBox{background:var(--panel);color:var(--text);width:min(520px,calc(100vw - 24px));max-height:88vh;overflow:auto;border-radius:14px;padding:18px;box-sizing:border-box;box-shadow:0 10px 40px rgba(0,0,0,.3)}',
-    '.ap-dhead{position:sticky;top:-18px;z-index:3;margin:-18px -18px 0;padding:0 12px;height:34px;background:var(--panel);display:flex;align-items:center;justify-content:flex-end;border-radius:14px 14px 0 0}',
+    // шапка окна: заголовок слева, крестик справа на одной линии с ним; при прокрутке остаётся на месте
+    '.ap-dhead{position:sticky;top:-18px;z-index:3;margin:-18px -18px 8px;padding:14px 18px 8px;min-height:30px;background:var(--panel);display:flex;align-items:center;gap:12px;border-radius:14px 14px 0 0}',
     '.ap-dhead .ap-grip{position:absolute;left:50%;top:6px;margin:0 0 0 -18px;display:none}#apDlg.lock .ap-dx{display:none}',
-    '@media (max-width:899px){.ap-dhead .ap-grip{display:block}}',
+    '.ap-dhead h3{flex:1 1 auto;min-width:0;margin:0!important}.ap-dx{flex:0 0 30px;margin-left:auto;padding:0;display:flex;align-items:center;justify-content:center}',
+    '@media (max-width:899px){.ap-dhead{padding-top:20px;border-radius:20px 20px 0 0}.ap-dhead .ap-grip{display:block}}',
     '#apDlgBox h3{margin:0 0 6px;font-size:18px}',
     '@media (max-width:899px){#apDlg{align-items:flex-end}#apDlgBox{width:100%;border-radius:20px 20px 0 0;max-height:92vh;padding-bottom:calc(18px + env(safe-area-inset-bottom))}}',
     // меню настроек
@@ -461,6 +464,7 @@
     undo: ic('<path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/>'),
     map: ic('<path d="M3 6l6-2 6 2 6-2v14l-6 2-6-2-6 2z"/><path d="M9 4v14M15 6v14"/>'),
     help: ic('<circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.6 2.2c-.7.4-1.1 1-1.1 1.8M12 17h.01"/>'),
+    north: '<svg viewBox="0 0 24 24"><path d="M12 2.5 16 12H8z" fill="#ff3b30"/><path d="M12 21.5 8 12h8z" fill="currentColor" opacity=".45"/></svg>',
     gear: ic('<circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"/>'),
     cross: ic('<circle cx="12" cy="12" r="2" fill="currentColor"/><path d="M12 1v7M12 16v7M1 12h7M16 12h7"/>', 2.2)
   };
@@ -523,6 +527,7 @@
     onAdd: function () {
       var d = L.DomUtil.create('div', 'ap-ctl');
       d.innerHTML = '<div class="grp zoom"><button type="button" data-c="in" title="Приблизить">' + I.plus + '</button><button type="button" data-c="out" title="Отдалить">' + I.minus + '</button></div>' +
+        '<div class="grp north"><button type="button" data-c="north" title="Север наверх">' + I.north + '</button></div>' +
         '<div class="grp undo"><button type="button" data-c="undo" title="Отменить последнее изменение">' + I.undo + '</button></div>' +
         '<div class="grp"><button type="button" data-c="fit" title="Показать всю сеть">' + I.fit + '</button><button type="button" data-c="loc" title="Где я">' + I.locate + '</button></div>' +
         '<button type="button" class="ap-fab" data-c="add" title="Добавить">' + I.plus + '</button>';
@@ -533,7 +538,7 @@
         if (!b) return;
         var c = b.getAttribute('data-c');
         if (c === 'in') map.zoomIn(); else if (c === 'out') map.zoomOut();
-        else if (c === 'undo') undo(); else if (c === 'fit') fitAll(); else if (c === 'loc') locate(); else if (c === 'add') showAdd();
+        else if (c === 'north') map.setBearing(0); else if (c === 'undo') undo(); else if (c === 'fit') fitAll(); else if (c === 'loc') locate(); else if (c === 'add') showAdd();
       });
       return d;
     }
@@ -634,7 +639,10 @@
 
   var dlgLock = false;      // окно нельзя закрыть, не ответив (имя при первом запуске)
   function openDlg(html) { dlgBox.removeAttribute('data-offline'); dlgBox.removeAttribute('data-set'); dlgLock = false; dlg.classList.remove('lock'); dlgBox.style.transform = '';
-    dlgBox.innerHTML = '<div class="ap-dhead"><div class="ap-grip"></div><button type="button" class="ap-x ap-dx" title="Закрыть">&#10005;</button></div>' + html;
+    dlgBox.innerHTML = '<div class="ap-dhead"><div class="ap-grip"></div><button type="button" class="ap-x ap-dx" title="Закрыть">' +
+      '<svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M2 2l8 8M10 2l-8 8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button></div>' + html;
+    var head = dlgBox.firstChild, h3 = head.nextElementSibling;
+    if (h3 && h3.tagName === 'H3') head.insertBefore(h3, head.lastChild);       // заголовок — в шапку, рядом с крестиком
     dlgBox.querySelector('.ap-dx').onclick = function () { if (!dlgLock) closeDlg(); }; dlg.classList.add('show'); return dlgBox; }
   function closeDlg() { dlg.classList.remove('show'); dlgBox.innerHTML = ''; dlgBox.removeAttribute('data-offline'); dlgBox.removeAttribute('data-set'); }
   dlg.addEventListener('click', function (e) { if (e.target === dlg && !dlgLock) closeDlg(); });
@@ -1633,15 +1641,14 @@
 
   function sw(on) { return '<span class="sw' + (on ? ' on' : '') + '"></span>'; }
   function renderMenu() {
-    var online = $('online') && $('online').checked, dark = document.body.classList.contains('dark'), who = localStorage.getItem(WHO) || '';
+    var dark = document.body.classList.contains('dark');
     menu.innerHTML =
       '<button type="button" class="mi" data-m="file">' + I.file + 'Обмен данными (файл)</button>' +
       '<button type="button" class="mi" data-m="journal">' + I.list + 'Журнал изменений</button>' +
       '<button type="button" class="mi" data-m="offline">' + I.map + 'Карта без интернета</button>' +
       '<button type="button" class="mi" data-m="legend">' + I.node + 'Обозначения</button>' +
       '<button type="button" class="mi" data-m="help">' + I.help + 'Инструкция</button>' +
-      '<hr><button type="button" class="mi" data-m="online">' + I.web + 'Карта из интернета' + sw(online) + '</button>' +
-      '<button type="button" class="mi" data-m="theme">' + I.moon + 'Тёмная тема' + sw(dark) + '</button>' +
+      '<hr><button type="button" class="mi" data-m="theme">' + I.moon + 'Тёмная тема' + sw(dark) + '</button>' +
       '<hr><button type="button" class="mi" data-m="set">' + I.gear + 'Настройки</button>';
   }
   function closeMenu() { menu.classList.remove('show'); }
@@ -1658,7 +1665,6 @@
     if (m === 'file') { closeMenu(); showExchange(); }
     else if (m === 'journal') { closeMenu(); showJournal(); }
     else if (m === 'offline') { closeMenu(); showOffline(); }
-    else if (m === 'online') { toggleOnline(); renderMenu(); menu.classList.add('show'); }
     else if (m === 'theme') { setS('theme', document.body.classList.contains('dark') ? 'light' : 'dark'); renderMenu(); menu.classList.add('show'); }
     else if (m === 'legend') { closeMenu(); showLegend(); }
     else if (m === 'help') { closeMenu(); showHelp(); }
@@ -1674,7 +1680,7 @@
     var cur = localStorage.getItem(WHO) || '';
     openDlg('<h3>' + (first ? 'Кто работает с картой?' : 'Подпись изменений') + '</h3>' +
       '<p class="muted">Фамилия или мобильный расчёт. Так подписываются ваши изменения и называется файл, которым вы делитесь.</p>' +
-      '<label for="apWho">Имя</label><input id="apWho" value="' + esc(cur) + '" placeholder="например: Карабанов" autocomplete="off">' +
+      '<label for="apWho">Имя</label><input id="apWho" value="' + esc(cur) + '" placeholder="например: Иванов" autocomplete="off">' +
       '<div class="sec">Или мобильный расчёт</div><div class="chips">' + [1, 2, 3, 4, 5, 6].map(function (n) {
         return '<button type="button" class="chip" data-mr="' + n + '">№ ' + n + '</button>';
       }).join('') + '</div>' +
@@ -1698,11 +1704,6 @@
     if ($('apNo')) $('apNo').onclick = closeDlg;
     if (pc) inp.focus();
   }
-  function toggleOnline() {
-    $('online').click();
-    toast($('online').checked ? 'Карта из интернета включена' : 'Интернет для карты выключен: офлайн-карта районов и то, что уже открывали');
-  }
-
   function showJournal() {
     var list = db.journal.slice(0, 300);
     openDlg('<h3>Журнал изменений</h3>' + (list.length ? list.map(function (j) {
@@ -1715,8 +1716,8 @@
 
   // ================================================================== карта без интернета
 
-  var REGIONS = [{ slug: 'kherson', name: 'Херсонская область', mb: 102 }, { slug: 'zaporozhye', name: 'Запорожская область', mb: 104 },
-    { slug: 'crimea', name: 'Крым', mb: 77 }];
+  var REGIONS = [{ slug: 'kherson', name: 'Херсонская область', mb: 102, sat: 145 }, { slug: 'zaporozhye', name: 'Запорожская область', mb: 104, sat: 135 },
+    { slug: 'crimea', name: 'Крым', mb: 77, sat: 110 }];
   var MAPS_URL = 'https://github.com/Almazny26/apk_map/releases/download/maps/';
   var mapJob = null, mapPoll = 0;      // телефон: ход скачивания {state, slug, done, total, error}
   function mb(n) { return Math.round((n || 0) / 1048576) + ' МБ'; }
@@ -1725,56 +1726,69 @@
     if (pc) fetch('/api/map').then(function (r) { return r.json(); }).then(function (st) { renderOffline(st.files || [], st.job); }, function () { renderOffline([], null); });
     else renderOffline(window.KartaMap ? window.KartaMap.info().files : [], mapJob);
   }
+  var mapQueue = [];       // телефон: что ещё скачать после текущего файла
   function renderOffline(files, job) {
     var by = {}, KM = window.KartaMap, run = job && job.state === 'running' ? job : null, top = offlineOpen() ? dlgBox.scrollTop : 0;
     files.forEach(function (f) { by[f.slug] = f; });
-    var html = '<h3>Карта без интернета</h3><p class="muted">Скачайте район — и схема в нём рисуется сразу, без интернета, на любом масштабе до отдельных домов.</p>';
-    if (KM && !KM.info().gl) html += '<p style="color:var(--danger)">Это устройство не умеет быстро рисовать карту (нет WebGL) — офлайн-карта показана не будет.</p>';
-    function row(slug, name, f, size) {
-      var r = '<div class="srow"><span>' + esc(name) + '<small>' + (f ? 'загружена, ' + mb(f.size) : size ? 'около ' + size + ' МБ' : '') + '</small></span>';
-      if (run && run.slug === slug) {
-        var pct = run.total ? Math.floor(run.done * 100 / run.total) : 0;
-        r += '<button type="button" class="b t" data-a="cancel">Отмена</button><div style="flex:1 1 100%"><div style="height:8px;border-radius:4px;background:var(--line);overflow:hidden">' +
-          '<div style="height:100%;width:' + pct + '%;background:var(--accent)"></div></div><small>' + (run.total ? mb(run.done) + ' из ' + mb(run.total) + ' (' + pct + '%)' : esc(run.stage || 'подключаюсь…')) + '</small></div>';
-      } else if (f) r += '<button type="button" class="b d" data-del="' + esc(slug) + '">Удалить</button>';
-      else r += '<button type="button" class="b" data-dl="' + esc(slug) + '"' + (run ? ' disabled' : '') + '>Скачать</button>';
+    var html = '<h3>Карта без интернета</h3><p class="muted">Скачайте район — и в нём без интернета рисуются сразу: схема на любом масштабе до отдельных домов и снимки со спутника.</p>';
+    if (KM && !KM.info().gl) html += '<p style="color:var(--danger)">Это устройство не умеет быстро рисовать карту (нет WebGL) — офлайн-схема показана не будет.</p>';
+    function bar() {
+      var pct = run.total ? Math.floor(run.done * 100 / run.total) : 0, sat = /-sat$/.test(run.slug);
+      return '<div style="flex:1 1 100%"><div style="height:8px;border-radius:4px;background:var(--line);overflow:hidden">' +
+        '<div style="height:100%;width:' + pct + '%;background:var(--accent)"></div></div><small>' + (sat ? 'снимки: ' : 'схема: ') +
+        (run.total ? (run.total > 100000 ? mb(run.done) + ' из ' + mb(run.total) : run.done + ' из ' + run.total) + ' (' + pct + '%)' : esc(run.stage || 'подключаюсь…')) + '</small></div>';
+    }
+    function row(g) {
+      var f = by[g.slug], fs = by[g.slug + '-sat'], busy = run && (run.slug === g.slug || run.slug === g.slug + '-sat');
+      var st = f ? 'схема ' + mb(f.size) + (fs ? ', снимки ' + mb(fs.size) : ', снимков нет') : fs ? 'только снимки ' + mb(fs.size) : 'около ' + (g.mb + g.sat) + ' МБ: схема и снимки';
+      var r = '<div class="srow"><span>' + esc(g.name) + '<small>' + st + '</small></span>';
+      if (busy) r += '<button type="button" class="b t" data-a="cancel">Отмена</button>' + bar();
+      else {
+        if (!f || !fs) r += '<button type="button" class="b" data-dl="' + (f ? g.slug + '-sat' : fs ? g.slug : g.slug + ',' + g.slug + '-sat') + '"' + (run ? ' disabled' : '') + '>' +
+          (f ? 'Скачать снимки' : fs ? 'Скачать схему' : 'Скачать') + '</button>';
+        if (f || fs) r += '<button type="button" class="b d" data-del="' + [f && g.slug, fs && g.slug + '-sat'].filter(Boolean).join(',') + '">Удалить</button>';
+      }
       return r + '</div>';
     }
-    html += '<div class="sec">Районы — из интернета</div>' + REGIONS.map(function (g) { return row(g.slug, g.name, by[g.slug], g.mb); }).join('');
-    var other = files.filter(function (f) { return !REGIONS.some(function (g) { return g.slug === f.slug; }); });
-    if (other.length) html += '<div class="sec">Другие файлы карт</div>' + other.map(function (f) { return row(f.slug, f.name && f.name !== f.slug ? f.name : f.slug, f); }).join('');
+    html += '<div class="sec">Районы — из интернета</div>' + REGIONS.map(row).join('');
+    var other = files.filter(function (f) { return !REGIONS.some(function (g) { return g.slug === f.slug || g.slug + '-sat' === f.slug; }); });
+    if (other.length) html += '<div class="sec">Другие файлы карт</div>' + other.map(function (f) {
+      return '<div class="srow"><span>' + esc(f.name && f.name !== f.slug ? f.name : f.slug) + '<small>' + (f.kind === 'sat' ? 'снимки' : 'схема') + ', ' + mb(f.size) + '</small></span>' +
+        '<button type="button" class="b d" data-del="' + esc(f.slug) + '">Удалить</button></div>';
+    }).join('');
     if (job && job.state === 'error') html += '<p style="color:var(--danger)">Не скачалось: ' + esc(job.error || '') + '</p>';
-    html += '<div class="sec">Файл карты — с этого устройства</div><p class="muted">Файл района (.pmtiles), присланный с другого телефона или компьютера.</p>' +
+    html += '<p class="muted">Снимки района — съёмка Sentinel-2, 10 м на точку: видны поля, лесополосы, реки, дороги, кварталы. Более подробные снимки (отдельные дома, опоры) подгружаются из интернета сами и остаются на устройстве там, где вы их уже смотрели. Целую область в таком качестве скачать нельзя: это десятки гигабайт, и владельцы этих снимков массовое скачивание запрещают.</p>' +
+      '<div class="sec">Файл карты — с этого устройства</div><p class="muted">Файл района (.pmtiles), присланный с другого телефона или компьютера.</p>' +
       btnRow([['pick', 'Выбрать файл…', 't']]) +
       '<div class="row"><button type="button" class="b t" id="apNo">Закрыть</button></div>';
     openDlg(html);
     dlgBox.setAttribute('data-offline', '1');
     dlgBox.scrollTop = top;
     $('apNo').onclick = function () { closeDlg(); };
-    function reload() { if (KM) KM.reload(function () { if (offlineOpen()) showOffline(); }); }
     function post(body) { return fetch('/api/map', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); }
     dlgBox.querySelectorAll('[data-dl]').forEach(function (b) {
       b.onclick = function () {
-        var slug = b.getAttribute('data-dl');
-        if (pc) post({ download: slug }).then(function () { pollMap(); });
+        var list = b.getAttribute('data-dl').split(',');
+        if (pc) post({ download: list }).then(function () { pollMap(); });
         else if (android && android.mapDownload) {
-          if (android.mapDownload(slug, MAPS_URL + slug + '.pmtiles')) { mapJob = { state: 'running', slug: slug, done: 0, total: 0 }; showOffline(); }
-          else toast('Подождите: уже идёт другая загрузка');
+          mapQueue = list.slice(1);
+          if (android.mapDownload(list[0], MAPS_URL + list[0] + '.pmtiles')) { mapJob = { state: 'running', slug: list[0], done: 0, total: 0 }; showOffline(); }
+          else { mapQueue = []; toast('Подождите: уже идёт другая загрузка'); }
         } else toast('Скачивание работает в приложении на телефоне и в программе на компьютере');
       };
     });
     dlgBox.querySelectorAll('[data-del]').forEach(function (b) {
       b.onclick = function () {
-        var slug = b.getAttribute('data-del');
+        var list = b.getAttribute('data-del').split(',');
         confirmDlg('Удалить эту офлайн-карту?', 'Удалить', function () {
-          if (pc) post({ delete: slug }).then(reload).then(function () { showOffline(); });
-          else { if (android && android.mapDelete) android.mapDelete(slug); if (KM) KM.reload(function () { showOffline(); }); }
+          if (pc) Promise.all(list.map(function (x) { return post({ delete: x }); })).then(function () { if (KM) KM.reload(function () { showOffline(); }); else showOffline(); });
+          else { list.forEach(function (x) { if (android && android.mapDelete) android.mapDelete(x); }); if (KM) KM.reload(function () { showOffline(); }); }
           toast('Офлайн-карта удалена');
         });
       };
     });
     bind(dlgBox, {
-      cancel: function () { if (pc) post({ cancel: true }); else if (android && android.mapCancel) android.mapCancel(); toast('Отменяю…'); },
+      cancel: function () { mapQueue = []; if (pc) post({ cancel: true }); else if (android && android.mapCancel) android.mapCancel(); toast('Отменяю…'); },
       pick: function () { if (android && android.openFile) android.openFile(); else if (pc) mapPicker.click(); }
     });
     clearTimeout(mapPoll);
@@ -1786,7 +1800,7 @@
       var running = st.job && st.job.state === 'running';
       if (wasRunning && !running) {
         if (window.KartaMap) window.KartaMap.reload();
-        if (st.job.state === 'done') toast('Офлайн-карта скачана: ' + (st.job.name || ''));
+        if (st.job.state === 'done') toast('Офлайн-карта скачана');
       }
       wasRunning = running;
       if (offlineOpen()) renderOffline(st.files || [], st.job);
@@ -1813,14 +1827,17 @@
     if (offlineOpen()) showOffline(); else if (!total) toast('Копирую карту: ' + mb(done) + '…');
   };
   window.__kartaMap = function (ok, msg) {
-    mapJob = ok || msg === 'отменено' ? null : { state: 'error', error: msg };
+    var next = ok ? mapQueue.shift() : null;
+    if (!ok) mapQueue = [];
+    if (next && android && android.mapDownload && android.mapDownload(next, MAPS_URL + next + '.pmtiles')) mapJob = { state: 'running', slug: next, done: 0, total: 0 };
+    else { next = null; mapJob = ok || msg === 'отменено' ? null : { state: 'error', error: msg }; }
     if (window.KartaMap) window.KartaMap.reload(function () { if (offlineOpen()) showOffline(); });
-    toast(ok ? 'Офлайн-карта загружена' : msg === 'отменено' ? 'Загрузка отменена' : 'Карта не загружена: ' + msg);
+    if (!next) toast(ok ? 'Офлайн-карта загружена' : msg === 'отменено' ? 'Загрузка отменена' : 'Карта не загружена: ' + msg);
   };
 
   // ================================================================== обмен файлами
 
-  /* Имя файла: кто и когда — «Карабанов_13.11.26_19.44.json», «Моб.Расчет№2_13.11.26_19.44.json».
+  /* Имя файла: кто и когда — «Иванов_13.11.26_19.44.json», «Моб.Расчет№2_13.11.26_19.44.json».
    * Время через точку: двоеточие в именах файлов Windows и Android не допускают. */
   function fileName() {
     var d = new Date(), who = author().replace(/[\\\/:*?"<>|\r\n]+/g, '').trim().replace(/\s+/g, '_') || 'Карта';
@@ -2004,8 +2021,8 @@
     { k: 'ptLbl', t: 'Номера и имена точек', o: [['always', 'Всегда'], ['near', 'Вблизи'], ['never', 'Нет']] },
     { k: 'scale', t: 'Масштабная линейка' },
     { k: 'zoomBtns', t: 'Кнопки масштаба «+ −»', phone: true },
-    { k: '_online', t: 'Карта из интернета', h: 'выключите — только офлайн-карта районов и то, что уже открывали' },
     { k: 'schema', t: 'Схема там, где есть офлайн-карта', o: [['auto', 'Офлайн-карта'], ['online', 'Из интернета']], h: 'офлайн-карта рисуется сразу и не тратит интернет' },
+    { k: 'rot', t: 'Вращение карты', h: pc ? 'Shift + колесо мыши; кнопка-компас возвращает север наверх' : 'двумя пальцами; кнопка-компас возвращает север наверх' },
     { sec: 'Работа' },
     { k: 'start', t: 'При запуске открывать', o: [['view', 'Просмотр'], ['edit', 'Правку'], ['last', 'Как в прошлый раз']] },
     { k: 'tap', t: 'Ставить точки нажатием на карту', h: 'выключите, чтобы точки ставились только в перекрестие' },
@@ -2029,6 +2046,9 @@
     b.classList.toggle('ap-nocoords', !S.pcCoords);
     if (window.KartaMap && window.KartaMap.setSchema) window.KartaMap.setSchema(S.schema);
     if (android && android.keepScreen) try { android.keepScreen(!!S.keep); } catch (e) { /* старая оболочка */ }
+    if (android && android.setDark) try { android.setDark(dark); } catch (e) { /* старая оболочка */ }
+    if (map.touchRotate) { if (S.rot) map.touchRotate.enable(); else { map.touchRotate.disable(); if (map.getBearing && map.getBearing()) map.setBearing(0); } }
+    if (map.shiftKeyRotate) { if (S.rot) map.shiftKeyRotate.enable(); else map.shiftKeyRotate.disable(); }
     var t = cssText(S.ui);
     if (css.textContent !== t) css.textContent = t;
     document.documentElement.style.setProperty('--pw', Math.round(S.pcPanel * S.ui) + 'px');
@@ -2049,7 +2069,7 @@
     SETTINGS.forEach(function (r) {
       if ((r.pc && !pc) || (r.phone && pc)) return;
       if (r.sec) { html += '<div class="sec">' + r.sec + '</div>'; return; }
-      var val = r.k === '_online' ? !!($('online') && $('online').checked) : S[r.k];
+      var val = S[r.k];
       html += '<div class="srow"><span>' + esc(r.t) + (r.h ? '<small>' + esc(r.h) + '</small>' : '') + '</span>' +
         (r.o ? '<div class="chips">' + r.o.map(function (o, i) {
           return '<button type="button" class="chip' + (o[0] === val ? ' on' : '') + '" data-sk="' + r.k + '" data-si="' + i + '">' + o[1] + '</button>';
@@ -2058,7 +2078,7 @@
     html += '<div class="sec">Прочее</div><div class="srow"><span>Подпись изменений<small>' + esc(localStorage.getItem(WHO) || 'не задана') + '</small></span>' +
       '<button type="button" class="b t" data-a="who">Изменить</button></div>' +
       '<div class="row"><button type="button" class="b d" data-a="reset">Сбросить настройки</button><button type="button" class="b" id="apNo">Готово</button></div>' +
-      '<p class="muted">Карта сети 3.2. Настройки хранятся на этом устройстве и в файл обмена не попадают.<br>' + esc((window.KartaMap && window.KartaMap.credits) || '') + '</p>';
+      '<p class="muted">Карта сети 3.3. Настройки хранятся на этом устройстве и в файл обмена не попадают.<br>' + esc((window.KartaMap && window.KartaMap.credits) || '') + '</p>';
     openDlg(html);
     dlgBox.setAttribute('data-set', '1');
     dlgBox.scrollTop = top;
@@ -2066,8 +2086,7 @@
     dlgBox.querySelectorAll('[data-sk]').forEach(function (b) {
       b.onclick = function () {
         var k = b.getAttribute('data-sk'), r = SETTINGS.filter(function (x) { return x.k === k; })[0];
-        if (k === '_online') toggleOnline();
-        else setS(k, r.o ? r.o[+b.getAttribute('data-si')][0] : !S[k]);
+        setS(k, r.o ? r.o[+b.getAttribute('data-si')][0] : !S[k]);
         showSettings();
       };
     });
@@ -2094,7 +2113,8 @@
       ['Карточка сведений', pc ? 'Сведения открываются в панели слева. Esc закрывает её.' : 'Сведения открываются внизу свёрнутыми. Нажмите на них, чтобы развернуть; смахните вниз, чтобы свернуть или убрать — выделение при этом остаётся.'],
       ['Поделиться картой', '«⋮» → «Обмен данными» → «' + (pc ? 'Сохранить в файл' : 'Поделиться файлом') + '». Файл называется вашим именем с датой и временем.'],
       ['Загрузить чужую карту', '«⋮» → «Обмен данными» → «Открыть файл…»' + (pc ? '' : ' (или нажмите на файл в мессенджере → «Открыть с помощью» → «Карта сети»)') + '. Программа покажет отличия и спросит: «Добавить новое» — к вашей карте добавится то, чего у вас нет, ничего не удалится; «Заменить всю карту» — станет точно как в файле. Прежнюю карту можно вернуть там же.'],
-      ['Карта без интернета', '«⋮» → «Карта без интернета»: скачайте нужный район (Херсонская, Запорожская области, Крым) или выберите файл карты с устройства. Внутри района схема рисуется сразу и без связи. Снимки со спутника без интернета видны только там, где их уже открывали.'],
+      ['Карта без интернета', '«⋮» → «Карта без интернета»: скачайте нужный район (Херсонская, Запорожская области, Крым) или выберите файл карты с устройства. Внутри района без связи рисуются схема (до отдельных домов) и снимки со спутника (Sentinel-2, 10 м на точку); в «Гибриде» поверх снимков — дороги и подписи. Более подробные снимки подгружаются из интернета сами, когда он есть, и остаются там, где вы их уже открывали.'],
+      ['Вращение карты', pc ? 'Shift + колесо мыши поворачивает карту. Кнопка-компас справа возвращает север наверх.' : 'Поверните карту двумя пальцами. Кнопка-компас справа возвращает север наверх. Вращение можно выключить в настройках.'],
       ['Настройки', '«⋮» → «Настройки»: тема, размер кнопок и текста, подписи, значки, толщина линий, перекрестие и нажатия, координаты и другое.']
     ];
     openDlg('<h3>Инструкция</h3>' + H.map(function (h) {
@@ -2119,6 +2139,16 @@
       }).join('') + '</div><div class="row"><button type="button" class="b t" id="apNo">Закрыть</button></div>');
     $('apNo').onclick = closeDlg;
   }
+
+  // ================================================================== вращение карты: компас
+
+  if (map.getBearing) map.on('rotate', function () {
+    var b = map.getBearing() || 0, on = Math.abs(((b + 180) % 360 + 360) % 360 - 180) > 0.5;
+    document.body.classList.toggle('ap-rot', on);
+    var svg = document.querySelector('.ap-ctl .grp.north svg');
+    if (svg) svg.style.transform = 'rotate(' + b + 'deg)';
+    placeCross();
+  });
 
   // ================================================================== подсказка на пустой карте, кнопка «назад»
 

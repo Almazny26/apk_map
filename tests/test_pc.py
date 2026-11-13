@@ -173,6 +173,42 @@ class OfflineMapTest(unittest.TestCase):
             self.assertIsNone(m.tile(0, 0, 0))
 
 
+    @staticmethod
+    def sat_file(folder):
+        """Файл снимков крошечного «района», плитки берутся не из интернета, а подставные."""
+        m = run.OfflineMap(os.path.join(folder, "build"), lambda *a: None)
+        m.REGIONS = {"t": ("Тест", (46.0, 33.0, 46.02, 33.02))}
+        m.SAT_MAXZOOM = 6
+        asked = []
+
+        def get(url, *a, **k):
+            asked.append(url)
+            if "/g/5/" in url:
+                raise urllib.error.HTTPError(url, 404, "нет", None, None)
+            return b"\xff\xd8" + url.rsplit("/g/", 1)[1].encode()
+        m._get = get
+        path = os.path.join(folder, "t-sat.pmtiles")
+        res = m.build_sat(["t"], path)
+        return path, res, asked
+
+    def test_sat_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            path, res, asked = self.sat_file(d)
+            self.assertEqual(len(asked), 7)                      # масштабы 0–6, по одной плитке
+            self.assertEqual(res["tiles"], 6)                    # плитки 5-го масштаба «нет на сервере»
+            m = run.OfflineMap(os.path.join(d, "map"), lambda *a: None)
+            with open(path, "rb") as f:
+                slug = m.upload("t-sat.pmtiles", f, os.path.getsize(path))
+            f = m.status()["files"][0]
+            self.assertEqual((slug, f["kind"]), ("t-sat", "sat"))
+            self.assertIsNone(m.tile(6, 37, 22))                 # снимки — не схема
+            x, y = int((33.01 + 180) / 360 * 64), 22
+            data, gz = m.tile(6, x, y, "sat")
+            self.assertEqual((data, gz), (b"\xff\xd8" + ("6/%d/%d.jpg" % (y, x)).encode(), False))
+            self.assertIsNone(m.tile(5, x >> 1, y >> 1, "sat"))
+            m.delete(slug)
+
+
 class OfflineHttpTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -206,6 +242,18 @@ class OfflineHttpTest(unittest.TestCase):
         self.assertGreater(len(r.read()), 1000)
         r = urllib.request.urlopen(self.base + "/vendor/fonts/Noto%20Sans%20Regular/40000-40255.pbf", timeout=10)
         self.assertEqual((r.status, r.read()), (200, b""))
+        # снимки района: отдельный файл, плитки-картинки по своему адресу
+        with tempfile.TemporaryDirectory() as d:
+            path = OfflineMapTest.sat_file(d)[0]
+            with open(path, "rb") as f:
+                blob = f.read()
+        urllib.request.urlopen(urllib.request.Request(self.base + "/api/mapupload?name=t-sat.pmtiles", data=blob, method="POST"), timeout=10)
+        st = json.loads(urllib.request.urlopen(self.base + "/api/map", timeout=10).read())
+        self.assertEqual(sorted((f["slug"], f["kind"]) for f in st["files"]), [("t-sat", "sat"), ("test", "map")])
+        r = urllib.request.urlopen(self.base + "/osat/6/37/22.jpg", timeout=10)
+        self.assertEqual((r.headers.get("Content-Type"), r.read()[:2]), ("image/jpeg", b"\xff\xd8"))
+        with self.assertRaises(urllib.error.HTTPError):
+            urllib.request.urlopen(self.base + "/osat/5/18/11.jpg", timeout=10)
         with self.assertRaises(urllib.error.HTTPError):
             urllib.request.urlopen(urllib.request.Request(self.base + "/api/mapupload?name=bad.pmtiles", data=b"x" * 500, method="POST"), timeout=10)
 

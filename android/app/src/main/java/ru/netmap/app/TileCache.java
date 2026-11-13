@@ -22,8 +22,8 @@ import java.util.Map;
  *
  * Плитка, открытая с интернетом, сохраняется в памяти приложения и потом показывается без связи
  * (как кэш браузера, только надёжнее: не теряется при нехватке места). Обновляется не чаще раза
- * в 30 дней. Всего не больше 500 МБ — при превышении удаляются самые старые.
- * Без «Онлайн» в интернет не ходим: только то, что уже есть. Если источник ответил «такой плитки
+ * в 30 дней. Всего не больше 2 ГБ — при превышении удаляются самые старые.
+ * Если связи нет (три неудачи подряд), 20 секунд в интернет не ходим и сразу отдаём запас. Если источник ответил «такой плитки
  * нет» (404 — например, снимка этого масштаба), неделю его об этой плитке не спрашиваем.
  */
 final class TileCache {
@@ -33,7 +33,11 @@ final class TileCache {
     private static final long FRESH = 30L * 24 * 3600 * 1000;
     private static final long NONE = 7L * 24 * 3600 * 1000;   // «такой плитки нет» помним неделю
     private static final int MISSING = -404;
-    private static final long LIMIT = 500L * 1024 * 1024;
+    private static final long LIMIT = 2048L * 1024 * 1024;     // просмотренное хранится, пока не наберётся 2 ГБ
+    private static final int FAILED = -1;
+    private static final long PAUSE = 20000;                    // мс без запросов после трёх неудач подряд
+    private static final java.util.concurrent.atomic.AtomicInteger FAILS = new java.util.concurrent.atomic.AtomicInteger();
+    private static volatile long downUntil;
     private static final String UA = "KartaSeti/2 (Android; https://github.com/Almazny26/apk_map)";
 
     private final File dir;
@@ -61,15 +65,21 @@ final class TileCache {
                 return image(cached);
             }
         }
-        if (online) {
+        if (online && System.currentTimeMillis() >= downUntil) {   // связи нет — не ждём, отдаём запас
             File none = new File(dir, key(url) + ".none");
             if (cached == null && none.exists() && System.currentTimeMillis() - none.lastModified() < NONE) {
                 return missing();
             }
             int[] code = new int[1];
             byte[] fresh = download(url, code);
-            if (fresh == null && code[0] != MISSING) {
+            if (fresh == null && code[0] == FAILED && FAILS.incrementAndGet() < 3) {
                 fresh = download(url, code);   // связь бывает медленной — вторая попытка
+            }
+            if (fresh != null || code[0] != FAILED) {
+                FAILS.set(0);
+            } else if (FAILS.incrementAndGet() >= 3) {
+                FAILS.set(0);
+                downUntil = System.currentTimeMillis() + PAUSE;
             }
             if (fresh != null) {
                 write(f, fresh);
@@ -112,7 +122,7 @@ final class TileCache {
         code[0] = 0;
         try {
             c = (HttpURLConnection) new URL(url).openConnection();
-            c.setConnectTimeout(10000);
+            c.setConnectTimeout(7000);
             c.setReadTimeout(20000);
             c.setRequestProperty("User-Agent", UA);
             int rc = c.getResponseCode();
@@ -137,6 +147,7 @@ final class TileCache {
                 return picture(d) ? d : null;
             }
         } catch (Exception e) {
+            code[0] = FAILED;                  // нет связи или она оборвалась
             return null;
         } finally {
             if (c != null) {
