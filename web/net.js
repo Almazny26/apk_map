@@ -181,6 +181,11 @@
     '.nm-lbl{position:absolute;left:50%;top:100%;transform:translateX(-50%);margin-top:2px;white-space:nowrap;font:600 11px/1.2 sans-serif;' +
       'color:#1a1a1a;text-shadow:0 0 3px #fff,0 0 3px #fff,0 0 3px #fff;pointer-events:none}',
     '.nm-nolabels .nm-lbl{display:none}',
+    '.nm-llbl{position:absolute;transform:translate(-50%,-50%);white-space:nowrap;font:600 11px/1.3 sans-serif;padding:0 5px;' +
+      'border-radius:8px;background:rgba(255,255,255,.88);color:#bf360c;border:1px solid #bf360c;pointer-events:none}',
+    '.nm-llbl.radio{color:#1565c0;border-color:#1565c0}',
+    '.nm-nolinelabels .nm-llbl{display:none}',
+    '.nm-fit a{font:700 18px/30px sans-serif!important;text-align:center;cursor:pointer}',
     '.nm-mid{width:14px;height:14px;border-radius:50%;background:#fff;border:2px solid #ef6c00;box-sizing:border-box;' +
       'color:#ef6c00;font:700 11px/10px sans-serif;text-align:center;opacity:.85;box-shadow:0 1px 3px rgba(0,0,0,.4)}',
     '.nm-me{width:16px;height:16px;border-radius:50%;background:#1e88e5;border:3px solid #fff;box-sizing:border-box;box-shadow:0 0 0 2px rgba(30,136,229,.35),0 1px 4px rgba(0,0,0,.5)}',
@@ -290,8 +295,37 @@
   }
 
   function hiddenNow(id) {
-    var cur = curGet(), fiber = typeof fiberMode !== 'undefined' && fiberMode;
-    return (cur.radio === id && !fiber) || (cur.fiber === id && fiber);
+    var cur = curGet();
+    return cur.radio === id || cur.fiber === id;
+  }
+
+  // ------------------------------------------------------------------ работа второй вкладки на карте
+  // Приложение показывает только линию открытой вкладки: во «ВОЛС» не видно радиолинии и наоборот.
+  // Здесь работа другой вкладки рисуется рядом, бледнее; нажатие — перейти к ней.
+  var ghost = L.layerGroup().addTo(map);
+  function drawGhost() {
+    ghost.clearLayers();
+    var fiber = typeof fiberMode !== 'undefined' && fiberMode, cur = curGet(), name;
+    if (fiber && points.length) {
+      name = get(cur.radio) ? get(cur.radio).f.name : 'Радиолиния (не сохранена)';
+      var rl = points.map(function (p) { return [p.lat, p.lng]; });
+      if (rl.length >= 2) ghost.addLayer(L.polyline(rl, { color: '#1565c0', weight: 3, dashArray: '9 6', opacity: .75 })
+        .bindTooltip(esc(name), { sticky: true }).on('click', function () { netTab(false); setTool('radio'); }));
+      points.forEach(function (p, i) {
+        ghost.addLayer(L.circleMarker([p.lat, p.lng], { radius: 6, color: '#fff', weight: 2, fillColor: i === 0 ? '#c62828' : '#1565c0', fillOpacity: .85 })
+          .bindTooltip(letter(i) + ' · ' + esc(name)).on('click', function () { netTab(false); setTool('radio'); }));
+      });
+    }
+    if (!fiber && nodes.length) {
+      name = get(cur.fiber) ? get(cur.fiber).f.name : 'ВОЛС (не сохранена)';
+      var fl = nodes.map(function (p) { return [p.lat, p.lng]; });
+      if (fl.length >= 2) ghost.addLayer(L.polyline(fl, { color: '#ef6c00', weight: 3, opacity: .75 })
+        .bindTooltip(esc(name), { sticky: true }).on('click', function () { netTab(false); setTool('fiber'); }));
+      nodes.forEach(function (p, i) {
+        ghost.addLayer(L.circleMarker([p.lat, p.lng], { radius: 4, color: '#fff', weight: 1.5, fillColor: '#ef6c00', fillOpacity: .85 })
+          .bindTooltip((i + 1) + '. ' + esc(p.kind) + ' ' + esc(p.name || '')).on('click', function () { netTab(false); setTool('fiber'); }));
+      });
+    }
   }
 
   function refresh() {
@@ -320,6 +354,11 @@
         });
       }
       g.eachLayer(function (l) { if (l.options.interactive !== false) l.bindPopup(function () { return card(o.id); }); });
+      var mid = pts[Math.floor((pts.length - 1) / 2)], nxt = pts[Math.floor((pts.length - 1) / 2) + 1] || mid;
+      if (o.f.name) g.addLayer(L.marker([(mid.lat + nxt.lat) / 2, (mid.lng + nxt.lng) / 2], {
+        interactive: false, keyboard: false,
+        icon: L.divIcon({ className: '', html: '<div class="nm-llbl ' + o.type + '">' + esc(o.f.name) + '</div>', iconSize: [0, 0] })
+      }));
       g.addTo(layer);
       drawn[o.id] = g;
     });
@@ -334,10 +373,14 @@
       m.addTo(layer);
       drawn[o.id] = m;
     });
+    drawGhost();
     renderList();
   }
 
-  function labels() { map.getContainer().classList.toggle('nm-nolabels', map.getZoom() < 10); }
+  function labels() {
+    map.getContainer().classList.toggle('nm-nolabels', map.getZoom() < 10);
+    map.getContainer().classList.toggle('nm-nolinelabels', map.getZoom() < 12);
+  }
   map.on('zoomend', labels);
   labels();
 
@@ -647,6 +690,7 @@
     var r = setToolOrig.apply(this, arguments);
     if (which !== 'fiber') clearMids();
     refresh();
+    drawGhost();
     return r;
   };
 
@@ -667,7 +711,8 @@
     '<b>Сеть</b> <span class="nm-muted" id="netCount"></span>' +
     '<div class="row"><button type="button" id="netAdd">Добавить узел</button>' +
     '<button type="button" class="secondary" id="netLocate">Где я</button>' +
-    '<button type="button" class="secondary" id="netJournal">Журнал</button></div>' +
+    '<button type="button" class="secondary" id="netJournal">Журнал</button>' +
+    '<button type="button" class="secondary" id="netFit">Вся сеть</button></div>' +
     '<div class="row"><input type="search" id="netSearch" placeholder="Поиск: название, адрес, примечание">' +
     '<select id="netFilter"><option value="all">Всё</option><option value="node">Узлы</option><option value="radio">Радиолинии</option>' +
     '<option value="fiber">ВОЛС</option><option value="авария">Аварии</option><option value="работы">Работы</option><option value="план">План</option></select></div>' +
@@ -833,6 +878,7 @@
     }, { enableHighAccuracy: true, timeout: 20000, maximumAge: 30000 });
   }
   $('netLocate').onclick = locate;
+  $('netFit').onclick = function () { fitAll(); };
   var LocCtl = L.Control.extend({
     options: { position: pc ? 'bottomright' : 'topleft' },
     onAdd: function () {
@@ -844,6 +890,81 @@
     }
   });
   map.addControl(new LocCtl());
+
+  /* Показать всю сеть: все узлы и линии, а также несохранённую работу обеих вкладок. Окна (ПК) и
+   * шторка (телефон) не закрывают карту — для них оставляется место по краю. */
+  function fitAll() {
+    var b = L.latLngBounds([]);
+    alive().forEach(function (o) {
+      if (o.type === 'node') b.extend([o.f.lat, o.f.lng]);
+      else ((o.type === 'radio' ? o.f.points : o.f.fnodes) || []).forEach(function (p) { b.extend([p.lat, p.lng]); });
+    });
+    points.forEach(function (p) { b.extend([p.lat, p.lng]); });
+    nodes.forEach(function (p) { b.extend([p.lat, p.lng]); });
+    if (!b.isValid()) { say('В сети пока ничего нет'); return; }
+    var tl = [30, 30], br = [30, 30], mr = map.getContainer().getBoundingClientRect();
+    var tool = document.getElementById('pcTool');
+    if (tool && getComputedStyle(tool).display !== 'none' && !tool.classList.contains('pcw-min')) {
+      var r = tool.getBoundingClientRect();
+      if (r.right - mr.left < mr.width * 0.6) tl[0] = r.right - mr.left + 30;
+    }
+    var sh = parseInt(getComputedStyle(document.body).getPropertyValue('--sheet-h'), 10);
+    if (sh > 0) br[1] = Math.min(sh + 20, mr.height * 0.6);
+    map.fitBounds(b, { paddingTopLeft: tl, paddingBottomRight: br, maxZoom: 16 });
+    say('Вся сеть: ' + alive().length + ' объектов');
+  }
+  var FitCtl = L.Control.extend({
+    options: { position: pc ? 'bottomright' : 'topleft' },
+    onAdd: function () {
+      var d = L.DomUtil.create('div', 'leaflet-bar nm-fit'), a = L.DomUtil.create('a', '', d);
+      a.innerHTML = '&#10530;'; a.title = 'Показать всю сеть'; a.href = '#';
+      L.DomEvent.on(a, 'click', function (e) { L.DomEvent.stop(e); fitAll(); });
+      L.DomEvent.disableClickPropagation(d);
+      return d;
+    }
+  });
+  map.addControl(new FitCtl());
+
+  // ------------------------------------------------------------------ «Очистить» без потери работы
+  // Перед «Очистить» несохранённая линия предлагается к сохранению в сеть — чтобы она осталась на схеме.
+  function unsaved(kind) {
+    var cur = curGet(), o = get(cur[kind]);
+    if (kind === 'radio') {
+      if (points.length < 2) return false;
+      return !o || !same(o.f.points.map(function (p) { return [p.lat, p.lng]; }), points.map(function (p) { return [+(+p.lat).toFixed(6), +(+p.lng).toFixed(6)]; }));
+    }
+    if (nodes.length < 2) return false;
+    return !o || !same(o.f.fnodes.map(function (p) { return [p.lat, p.lng, p.kind, p.name || '']; }),
+      nodes.map(function (p) { return [+(+p.lat).toFixed(6), +(+p.lng).toFixed(6), p.kind, p.name || '']; }));
+  }
+  var clearing = false;
+  document.addEventListener('click', function (e) {
+    var b = e.target.closest && e.target.closest('#clear,#nodeClear');
+    if (!b || clearing) return;
+    var kind = b.id === 'clear' ? 'radio' : 'fiber';
+    if (!unsaved(kind)) return;
+    e.stopPropagation(); e.preventDefault();
+    var what = kind === 'radio' ? 'радиолинию' : 'линию ВОЛС';
+    dlgBox.innerHTML = '<h3>Сохранить ' + what + ' в сеть?</h3><p class="nm-muted">Иначе после «Очистить» её не будет на схеме.</p>' +
+      '<div class="nm-row"><button type="button" id="nmSaveClear">Сохранить</button>' +
+      '<button type="button" class="secondary" id="nmJustClear">Очистить без сохранения</button>' +
+      '<button type="button" class="secondary" id="nmCancel">Отмена</button></div>';
+    dlg.classList.add('show');
+    function doClear() { clearing = true; try { b.click(); } finally { clearing = false; } }
+    $('nmCancel').onclick = closeDlg;
+    $('nmJustClear').onclick = function () { closeDlg(); doClear(); };
+    $('nmSaveClear').onclick = function () {
+      closeDlg();
+      var before = db.journal.length ? db.journal[0].t : 0;
+      (kind === 'radio' ? saveRadio : saveFiber)();
+      // форма сохранения открыта; очистить после того, как её подтвердят
+      var wait = setInterval(function () {
+        if (dlg.classList.contains('show')) return;
+        clearInterval(wait);
+        if (db.journal.length && db.journal[0].t !== before && !unsaved(kind)) doClear();
+      }, 200);
+    };
+  }, true);
 
   // ================================================================== для exchange.js
 
@@ -861,4 +982,5 @@
   whoLabel();
   curLabels();
   if (localStorage.getItem(TAB) === 'net') netTab(true); else refresh();
+  drawGhost();
 })();
