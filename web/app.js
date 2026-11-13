@@ -194,7 +194,15 @@
     '.ap-ib{width:42px;height:42px;border:0;border-radius:50%;background:transparent;color:var(--text);display:inline-flex;align-items:center;justify-content:center;cursor:pointer}',
     '.ap-ib:hover{background:var(--bg)}',
     '.ap-ib svg{width:22px;height:22px}',
-    '@media (max-width:560px){.ap-logo span{display:none}.ap-seg button{padding:8px 11px}.ap-seg button svg{display:none}#apBar{gap:6px;padding-left:8px}}',
+    '.ap-ib{flex:0 0 auto}',
+    // телефон: переключатель режимов растягивается и сжимается сам, значки справа всегда на месте
+    // (с крупным системным шрифтом раньше «⋮» уезжал к самому краю экрана)
+    '@media (max-width:560px){#apBar{gap:4px;padding:0 max(10px,env(safe-area-inset-right)) 0 max(10px,env(safe-area-inset-left))}' +
+      '.ap-logo span{display:none}.ap-seg{flex:1 1 auto;min-width:0}.ap-seg button{flex:1 1 0;min-width:0;justify-content:center;padding:8px 6px;font-size:14px}' +
+      '.ap-seg button svg{display:none}.ap-sp{display:none}.ap-ib{width:40px;height:40px}}',
+    '.ap-seg .sht{display:none}',
+    '@media (max-width:420px){.ap-logo{display:none}.ap-seg .lng{display:none}.ap-seg .sht{display:inline}}',
+    '.ap-seg button{overflow:hidden;text-overflow:ellipsis}',
     // кнопки и поля
     '.ap button.b{border:0;border-radius:11px;padding:10px 14px;min-height:42px;font:600 14px var(--font);cursor:pointer;background:var(--accent);color:#fff}',
     'body.dark .ap button.b{color:#0b1d36}',
@@ -210,7 +218,8 @@
     '.ap .row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}',
     '.ap .row>button{flex:1 1 auto}',
     '.ap .chips{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0}',
-    '.ap .chips.tight{margin:6px 0 0}.ap .chips.scroll{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none}.ap .chips.scroll::-webkit-scrollbar{display:none}',
+    '.ap .chips.tight{margin:6px 0 0}.ap .chips.scroll{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;padding-right:16px}.ap .chips.scroll::-webkit-scrollbar{display:none}',
+    '.ap .lrow{display:flex;align-items:center;gap:10px;margin-top:6px}.ap .lrow>.muted{flex:0 0 58px}.ap .lrow .chips{margin:0}',
     '.ap .row.tool{flex-wrap:nowrap}.ap .row.tool>button{flex:0 0 auto}',
     '.ap .chip{border:1px solid var(--line);background:var(--panel);color:var(--text);border-radius:999px;padding:7px 13px;min-height:36px;font:500 14px var(--font);cursor:pointer;display:inline-flex;align-items:center;gap:6px}',
     '.ap .chip.on{background:var(--tonal);border-color:transparent;color:var(--accent);font-weight:700}',
@@ -240,7 +249,9 @@
     '@keyframes apUp{from{transform:translateY(30px);opacity:.5}to{transform:none;opacity:1}}',
     '.ap-grip{width:42px;height:5px;border-radius:3px;background:var(--line);margin:8px auto 0;flex:0 0 auto}',
     '.ap-head{display:flex;align-items:center;gap:8px;padding:8px 12px 4px 16px;flex:0 0 auto;touch-action:none}',
-    '.ap-title{flex:1;font-weight:700;font-size:17px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+    '.ap-tt{flex:1;min-width:0}.ap-sub{font-size:13px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:none}',
+    '#apSheet.peek .ap-body{display:none}#apSheet.peek .ap-sub{display:block}#apSheet.peek .ap-head{padding-bottom:12px;cursor:pointer}',
+    '.ap-title{font-weight:700;font-size:17px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
     '.ap-x{width:36px;height:36px;border:0;border-radius:50%;background:var(--bg);color:var(--muted);font-size:16px;cursor:pointer}',
     '.ap-body{overflow-y:auto;padding:0 16px 16px;overscroll-behavior:contain}',
     '@media (min-width:900px){#apSheet{left:12px;right:auto;top:68px;bottom:12px;width:380px;max-height:none;border-radius:16px;box-shadow:var(--shadow)}' +
@@ -346,16 +357,16 @@
     '<path d="M24 12 L14 31 L34 31 Z" fill="none" stroke="#7FD1FF" stroke-width="2.6" stroke-linejoin="round"/><circle cx="24" cy="12" r="5" fill="#fff"/>' +
     '<circle cx="14" cy="31" r="5" fill="#fff"/><circle cx="34" cy="31" r="5" fill="#FFB547"/></svg><span>Карта сети</span></div>' +
     '<div class="ap-seg"><button type="button" data-mode="view">' + I.eye.replace('<svg', '<svg width="18" height="18"') + 'Просмотр</button>' +
-    '<button type="button" data-mode="edit">' + I.pen.replace('<svg', '<svg width="18" height="18"') + 'Редактирование</button></div>' +
+    '<button type="button" data-mode="edit">' + I.pen.replace('<svg', '<svg width="18" height="18"') + '<span class="lng">Редактирование</span><span class="sht">Правка</span></button></div>' +
     '<div class="ap-sp"></div><button type="button" class="ap-ib" id="apFind" title="Поиск">' + I.search + '</button>' +
     '<button type="button" class="ap-ib" id="apMenuBtn" title="Настройки">' + I.dots + '</button>');
   bar.id = 'apBar';
   document.body.appendChild(bar);
 
-  var sheet = el('div', 'ap', '<div class="ap-grip"></div><div class="ap-head"><div class="ap-title"></div><button type="button" class="ap-x" title="Закрыть">&#10005;</button></div><div class="ap-body"></div>');
+  var sheet = el('div', 'ap', '<div class="ap-grip"></div><div class="ap-head"><div class="ap-tt"><div class="ap-title"></div><div class="ap-sub"></div></div><button type="button" class="ap-x" title="Закрыть">&#10005;</button></div><div class="ap-body"></div>');
   sheet.id = 'apSheet';
   document.body.appendChild(sheet);
-  var sheetTitle = sheet.querySelector('.ap-title'), sheetBody = sheet.querySelector('.ap-body');
+  var sheetTitle = sheet.querySelector('.ap-title'), sheetSub = sheet.querySelector('.ap-sub'), sheetBody = sheet.querySelector('.ap-body');
 
   var dlg = el('div', 'ap', '<div id="apDlgBox"></div>');
   dlg.id = 'apDlg';
@@ -418,20 +429,45 @@
 
   var view = null;   // что показано: {k: 'card'|'pt'|'line'|'nodemenu'|'tool'|'add'|'search', ...}
   function wide() { return window.innerWidth >= 900; }
+  /* На телефоне у карточки два положения: «свёрнута» (только название и строка сведений — карта
+   * видна почти вся) и «развёрнута». Сведения об объекте открываются свёрнутыми; смахивание вниз
+   * сворачивает, ещё раз — прячет карточку, но выделение и правка остаются (заказчик: «чтобы
+   * редактирование не останавливалось при смахивании меню»). Нажатие на свёрнутую — развернуть. */
+  var PEEKABLE = { card: 1, pt: 1, line: 1, nodemenu: 1 }, sheetKey = null, peek = false;
+  function keyOf(v) { return v ? v.k + ':' + (v.id || '') + ':' + (v.i == null ? '' : v.i) + ':' + (v.seg == null ? '' : v.seg) : ''; }
+  function subOf(v) {
+    var o = v && get(v.id);
+    if (!o) return '';
+    if (v.k === 'pt') { var p = ptsOf(o)[v.i] || {}; return p.nid ? 'на узле' : (p.kind || 'точка') + (p.name ? ' ' + p.name : ''); }
+    if (o.type === 'node') return [o.f.kind, o.f.state].filter(Boolean).join(' · ');
+    var L2 = lens(o), t = [TYPE_NAME[o.type], len(L2.air + L2.ground)];
+    if (o.type === 'fiber') { if (L2.air) t.push('опоры ' + len(L2.air)); if (L2.ground) t.push('земля ' + len(L2.ground)); }
+    return t.join(' · ');
+  }
+  function setPeek(on) {
+    peek = !!on && !wide() && !!view && !!PEEKABLE[view.k];
+    sheet.classList.toggle('peek', peek);
+    sizeChanged();
+  }
   function openSheet(title, v) {
+    var key = keyOf(v);
+    if (key !== sheetKey) { peek = v.k === 'card'; sheetBody.scrollTop = 0; }
+    sheetKey = key;
     view = v;
     sheetTitle.textContent = title;
+    sheetSub.textContent = subOf(v);
     sheet.classList.add('show');
-    sheetBody.scrollTop = 0;
-    sizeChanged();
+    setPeek(peek);
     return sheetBody;
   }
   function closeSheet() {
     if (view && view.k === 'tool') { finishTool(); return; }
     view = null;
+    sheetKey = null;
     sheet.classList.remove('show');
     sizeChanged();
   }
+  sheet.querySelector('.ap-head').addEventListener('click', function (e) { if (peek && !e.target.closest('.ap-x')) setPeek(false); });
   sheet.querySelector('.ap-x').onclick = function () {
     if (view && (view.k === 'card' || view.k === 'pt' || view.k === 'line' || view.k === 'nodemenu')) select(null);
     closeSheet();
@@ -449,13 +485,19 @@
   (function () {
     var y0 = null, head = sheet.querySelector('.ap-head'), grip = sheet.querySelector('.ap-grip');
     function st(e) { if (!wide()) y0 = e.touches[0].clientY; }
-    function mv(e) { if (y0 == null) return; var dy = e.touches[0].clientY - y0; if (dy > 0) sheet.style.transform = 'translateY(' + dy + 'px)'; }
+    function mv(e) { if (y0 == null) return; var dy = e.touches[0].clientY - y0; if (dy > 0 && view && view.k !== 'tool') sheet.style.transform = 'translateY(' + dy + 'px)'; }
     function en(e) {
       if (y0 == null) return;
       var dy = (e.changedTouches[0] || {}).clientY - y0;
       sheet.style.transform = '';
       y0 = null;
-      if (dy > 70) { if (view && view.k !== 'tool') select(null); closeSheet(); }
+      if (Math.abs(dy) < 8 && !e.target.closest('.ap-x')) { if (peek) setPeek(false); return; }   // нажатие
+      if (dy < -40 && peek) { setPeek(false); return; }
+      if (dy > 60) {
+        if (!view || view.k === 'tool') return;            // панель нанесения смахиванием не закрывается
+        if (PEEKABLE[view.k] && !peek) setPeek(true);       // развёрнута → свёрнута
+        else closeSheet();                                  // свёрнута → спрятана, выделение остаётся
+      }
     }
     [head, grip].forEach(function (h) {
       h.addEventListener('touchstart', st, { passive: true });
@@ -925,16 +967,20 @@
     var lay = layOf(o), body = openSheet('Точка ' + (i + 1) + ' · ' + (o.f.name || ''), view), html = '';
     if (p.nid) html += '<p class="muted">На узле «' + esc(nodeName(p.nid)) + '». Перетащите точку, чтобы отвязать от узла.</p>';
     else if (o.type === 'fiber') {
-      html += '<div class="sec">Вид точки</div><div class="chips">' + PT_KINDS.map(function (k) {
+      html += '<div class="chips tight scroll">' + PT_KINDS.map(function (k) {
         return '<button type="button" class="chip' + (p.kind === k ? ' on' : '') + '" data-k="' + k + '"><i style="background:' + PT_COLOR[k] + '"></i>' + k + '</button>';
       }).join('') + '</div>';
-      html += '<label for="apPtName">Номер или имя</label><div style="display:flex;gap:8px"><input id="apPtName" value="' + esc(p.name || '') + '" placeholder="например: оп. 12">' +
+      html += '<div style="display:flex;gap:8px;margin-top:8px"><input id="apPtName" value="' + esc(p.name || '') + '" placeholder="например: оп. 12">' +
         '<button type="button" class="b t" id="apPtSave" style="flex:0 0 auto">Сохранить</button></div>';
     }
-    if (o.type === 'fiber' && i < pts.length - 1) html += '<div class="sec">Участок до точки ' + (i + 2) + '</div>' + layChips(lay[i], 'seg');
-    if (o.type === 'fiber' && i > 0) html += '<div class="sec">Участок от точки ' + i + '</div>' + layChips(lay[i - 1], 'segp');
-    html += '<div class="muted" style="margin-top:10px">' + sk(p.lat, p.lng) + '</div>' +
-      btnRow([['del', 'Удалить точку', 'd'], ['back', 'К линии', 't']]);
+    // участки по обе стороны точки — одной строкой каждый
+    function layRow(txt, cur, w) {
+      return '<div class="lrow"><span class="muted">' + txt + '</span>' + layChips(cur, w).replace('class="chips"', 'class="chips tight"') + '</div>';
+    }
+    if (o.type === 'fiber' && i > 0) html += layRow('← от ' + i, lay[i - 1], 'segp');
+    if (o.type === 'fiber' && i < pts.length - 1) html += layRow('→ до ' + (i + 2), lay[i], 'seg');
+    html += '<div class="row tool"><button type="button" class="b d" data-a="del">Удалить</button>' +
+      '<span class="muted" style="flex:1;align-self:center;text-align:right">' + sk(p.lat, p.lng) + '</span></div>';
     body.innerHTML = html;
     body.querySelectorAll('[data-k]').forEach(function (b) {
       b.onclick = function () { var d = lineFields(o); d.pts[i].kind = b.getAttribute('data-k'); saveLine(o, d.pts, d.lay, 'точка изменена'); };
@@ -949,7 +995,7 @@
         saveLine(o, d.pts, d.lay, 'прокладка изменена');
       };
     });
-    bind(body, { del: function () { deletePoint(id, i); }, back: function () { showCard(id); } });
+    bind(body, { del: function () { deletePoint(id, i); } });
   }
   function layChips(cur, w) {
     return '<div class="chips">' + ['air', 'ground'].map(function (k) {
