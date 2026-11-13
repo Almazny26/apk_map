@@ -159,15 +159,48 @@
   }
   // телефон: плитки и шрифты берутся прямо из оболочки, без сети
   if (bridge && window.maplibregl) {
-    maplibregl.addProtocol('karta', function (params) {
-      var s = '', m = /^karta:\/\/t\/(\d+)\/(\d+)\/(\d+)/.exec(params.url);
+    /* Ответ оболочки — в фоне (tileAsync → window.__kartaTile): пока Java читает плитку, страница
+     * и жесты не ждут. Base64 раскладывается в байты тоже без остановки страницы (fetch data:). */
+    var pend = {}, seq = 0;
+    window.__kartaTile = function (id, s) { var f = pend[id]; if (f) { delete pend[id]; f(s); } };
+    function ask(kind, z, x, y, path, ac) {
+      return new Promise(function (done) {
+        var id = ++seq, sig = ac && ac.signal;
+        pend[id] = done;
+        if (sig) sig.addEventListener('abort', function () {
+          if (!pend[id]) return;
+          delete pend[id];
+          try { kf.tileCancel(id); } catch (e) { /* нет */ }
+          done('');
+        });
+        try { kf.tileAsync(id, kind, z, x, y, path || ''); } catch (e) { delete pend[id]; done(''); }
+      });
+    }
+    function bytes(s) {
+      if (!s) return Promise.resolve(new ArrayBuffer(0));
+      return fetch('data:application/octet-stream;base64,' + s).then(function (r) { return r.arrayBuffer(); }, function () { return b64(s); });
+    }
+    var BLANK_BUF = b64(BLANK.split(',')[1]);
+    maplibregl.addProtocol('karta', function (params, ac) {
+      var u = params.url, m, got;
+      if (kf.tileAsync) {
+        if ((m = /^karta:\/\/t\/(\d+)\/(\d+)\/(\d+)/.exec(u))) got = ask('t', +m[1], +m[2], +m[3], '', ac);
+        else if ((m = /^karta:\/\/s\/(\d+)\/(\d+)\/(\d+)/.exec(u))) {
+          return ask('s', +m[1], +m[2], +m[3], '', ac).then(function (s) {
+            return s ? bytes(s).then(function (d) { return { data: d }; }) : { data: BLANK_BUF.slice(0) };     // снимка нет — прозрачная плитка
+          });
+        } else if ((m = /^karta:\/\/f\/(.+)\/(\d+-\d+)$/.exec(u))) got = ask('f', 0, 0, 0, 'vendor/fonts/' + decodeURIComponent(m[1]) + '/' + m[2] + '.pbf', ac);
+        else got = Promise.resolve('');
+        return got.then(bytes).then(function (d) { return { data: d }; });
+      }
+      // старая оболочка — как раньше, синхронно
+      var s = '';
       try {
-        if (m) s = kf.mapTile(+m[1], +m[2], +m[3]);
-        else if ((m = /^karta:\/\/s\/(\d+)\/(\d+)\/(\d+)/.exec(params.url))) {
+        if ((m = /^karta:\/\/t\/(\d+)\/(\d+)\/(\d+)/.exec(u))) s = kf.mapTile(+m[1], +m[2], +m[3]);
+        else if ((m = /^karta:\/\/s\/(\d+)\/(\d+)\/(\d+)/.exec(u))) {
           s = kf.satTile ? kf.satTile(+m[1], +m[2], +m[3]) : '';
-          if (!s) return Promise.resolve({ data: b64(BLANK.split(',')[1]) });      // снимка нет — прозрачная плитка
-        }
-        else if ((m = /^karta:\/\/f\/(.+)\/(\d+-\d+)$/.exec(params.url))) s = kf.asset('vendor/fonts/' + decodeURIComponent(m[1]) + '/' + m[2] + '.pbf');
+          if (!s) return Promise.resolve({ data: BLANK_BUF.slice(0) });
+        } else if ((m = /^karta:\/\/f\/(.+)\/(\d+-\d+)$/.exec(u))) s = kf.asset('vendor/fonts/' + decodeURIComponent(m[1]) + '/' + m[2] + '.pbf');
       } catch (e) { s = ''; }
       return Promise.resolve({ data: s ? b64(s) : new ArrayBuffer(0) });
     });

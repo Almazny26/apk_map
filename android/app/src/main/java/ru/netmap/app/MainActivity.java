@@ -45,7 +45,12 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -79,6 +84,26 @@ public class MainActivity extends Activity {
     private static final long MAX_FILE = 64L * 1024 * 1024;
 
     private WebView web;
+    /** Фоновое чтение плиток офлайн-карты для страницы (tileAsync). */
+    private final ExecutorService tilePool = Executors.newFixedThreadPool(3);
+    private final ConcurrentHashMap<Integer, Future<?>> tileJobs = new ConcurrentHashMap<>();
+
+    private byte[] readAsset(String path) {
+        if (path == null || !path.startsWith("vendor/") || path.contains("..")) {
+            return null;
+        }
+        try (InputStream in = getAssets().open(path)) {
+            ByteArrayOutputStream out = new ByteArrayOutputStream(1 << 17);
+            byte[] buf = new byte[65536];
+            int n;
+            while ((n = in.read(buf)) > 0) {
+                out.write(buf, 0, n);
+            }
+            return out.toByteArray();
+        } catch (IOException e) {
+            return null;
+        }
+    }
     private Dem dem;
     private TileCache tileCache;
     private OfflineTiles offline;
@@ -949,19 +974,45 @@ public class MainActivity extends Activity {
         /** Файл из набора приложения (шрифты подписей карты) в base64; пусто — файла нет. */
         @JavascriptInterface
         public String asset(String path) {
-            if (path == null || !path.startsWith("vendor/") || path.contains("..")) {
-                return "";
-            }
-            try (InputStream in = getAssets().open(path)) {
-                ByteArrayOutputStream out = new ByteArrayOutputStream(1 << 17);
-                byte[] buf = new byte[65536];
-                int n;
-                while ((n = in.read(buf)) > 0) {
-                    out.write(buf, 0, n);
+            byte[] b = readAsset(path);
+            return b == null ? "" : Base64.encodeToString(b, Base64.NO_WRAP);
+        }
+
+        /**
+         * Плитка или шрифт в фоне (3.3.1). Синхронные mapTile/satTile/asset держали страницу, пока Java
+         * читает, распаковывает и кодирует плитку, — при смене вида карты MapLibre просит десятки плиток
+         * сразу, и карта замирала. Теперь ответ приходит позже: window.__kartaTile(id, base64).
+         * kind: "t" — схема, "s" — снимки, "f" — файл path из набора приложения.
+         */
+        @JavascriptInterface
+        public void tileAsync(int id, String kind, int z, int x, int y, String path) {
+            FutureTask<Void> task = new FutureTask<>(() -> {
+                String s = "";
+                try {
+                    byte[] b = "f".equals(kind) ? readAsset(path) : offline.tile(z, x, y, "s".equals(kind));
+                    if (b != null) {
+                        s = Base64.encodeToString(b, Base64.NO_WRAP);
+                    }
+                } catch (Exception ignored) {
+                    // нет плитки — пустой ответ
                 }
-                return Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP);
-            } catch (IOException e) {
-                return "";
+                if (tileJobs.remove(id) == null) {
+                    return null;                      // страница уже отказалась от этой плитки
+                }
+                final String js = "window.__kartaTile&&__kartaTile(" + id + ",'" + s + "')";
+                runOnUiThread(() -> web.evaluateJavascript(js, null));
+                return null;
+            });
+            tileJobs.put(id, task);
+            tilePool.execute(task);
+        }
+
+        /** Плитка больше не нужна (карту увели дальше) — если ещё не читалась, не читать. */
+        @JavascriptInterface
+        public void tileCancel(int id) {
+            Future<?> f = tileJobs.remove(id);
+            if (f != null) {
+                f.cancel(false);
             }
         }
 

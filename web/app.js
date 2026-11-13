@@ -1711,8 +1711,8 @@
 
   // ================================================================== карта без интернета
 
-  var REGIONS = [{ slug: 'kherson', name: 'Херсонская область', mb: 102, sat: 145 }, { slug: 'zaporozhye', name: 'Запорожская область', mb: 104, sat: 135 },
-    { slug: 'crimea', name: 'Крым', mb: 77, sat: 110 }];
+  var REGIONS = [{ slug: 'kherson', name: 'Херсонская область', mb: 102, sat: 141 }, { slug: 'zaporozhye', name: 'Запорожская область', mb: 104, sat: 124 },
+    { slug: 'crimea', name: 'Крым', mb: 77, sat: 104 }];
   var MAPS_URL = 'https://github.com/Almazny26/apk_map/releases/download/maps/';
   var mapJob = null, mapPoll = 0;      // телефон: ход скачивания {state, slug, done, total, error}
   function mb(n) { return Math.round((n || 0) / 1048576) + ' МБ'; }
