@@ -3,12 +3,19 @@ package ru.netmap.app;
 import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.content.ContentValues;
+import android.Manifest;
 import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.location.Location;
+import android.location.LocationListener;
+import android.location.LocationManager;
 import android.database.Cursor;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.os.Handler;
+import android.os.Looper;
 import android.provider.MediaStore;
 import android.provider.OpenableColumns;
 import android.util.Base64;
@@ -54,12 +61,17 @@ import java.util.concurrent.TimeUnit;
  * Добавлено для обмена файлами (мост KartaFiles, им пользуется web/exchange.js):
  *   - «Поделиться» файлом данных (мессенджер, почта) и «Сохранить» в выбранную папку;
  *   - открытие файла: выбор в памяти телефона или «Открыть с помощью» из мессенджера.
+ *
+ * Добавлено для карты сети (web/net.js): KartaFiles.locate() — местоположение по GPS или сети,
+ * ответ в window.__kartaGeo(широта, долгота, точность, ошибка).
  */
 public class MainActivity extends Activity {
 
     private static final String PREFS = "sec";
     private static final int REQ_OPEN = 2;
     private static final int REQ_SAVE = 3;
+    private static final int REQ_LOC = 4;
+    private static final long LOC_TIMEOUT = 25000;
     private static final long MAX_FILE = 64L * 1024 * 1024;
 
     private WebView web;
@@ -70,6 +82,8 @@ public class MainActivity extends Activity {
     private volatile String openedError = null;
     private String pendingSaveText = null;
     private boolean pageReady = false;
+    private LocationListener locListener = null;
+    private final Handler ui = new Handler(Looper.getMainLooper());
 
     private boolean isOnline() {
         return getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean("online", false);
@@ -533,6 +547,105 @@ public class MainActivity extends Activity {
         }
     }
 
+    // ------------------------------------------------------------------ местоположение
+
+    private boolean hasLocPermission() {
+        return Build.VERSION.SDK_INT < 23
+                || checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+                || checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private void geoAnswer(Location l, String error) {
+        if (l != null) {
+            js("window.__kartaGeo && window.__kartaGeo(" + l.getLatitude() + "," + l.getLongitude() + "," + (l.hasAccuracy() ? l.getAccuracy() : 0) + ",null)");
+        } else {
+            js("window.__kartaGeo && window.__kartaGeo(0,0,0," + JSONObject.quote(error) + ")");
+        }
+    }
+
+    @SuppressWarnings({"MissingPermission", "deprecation"})
+    private void startLocate() {
+        LocationManager lm = (LocationManager) getSystemService(LOCATION_SERVICE);
+        if (lm == null) {
+            geoAnswer(null, "нет службы местоположения");
+            return;
+        }
+        boolean gps = false, net = false;
+        try { gps = lm.isProviderEnabled(LocationManager.GPS_PROVIDER); } catch (Exception ignored) { }
+        try { net = lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER); } catch (Exception ignored) { }
+        if (!gps && !net) {
+            geoAnswer(null, "включите местоположение (GPS) в настройках телефона");
+            return;
+        }
+        stopLocate();
+        // сразу — последнее известное, если оно свежее двух минут
+        Location best = null;
+        for (String p : new String[]{LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER}) {
+            try {
+                Location l = lm.getLastKnownLocation(p);
+                if (l != null && (best == null || l.getTime() > best.getTime())) {
+                    best = l;
+                }
+            } catch (Exception ignored) { }
+        }
+        if (best != null && System.currentTimeMillis() - best.getTime() < 120000) {
+            geoAnswer(best, null);
+        }
+        final Location fallback = best;
+        locListener = new LocationListener() {
+            @Override
+            public void onLocationChanged(Location l) {
+                // ждём точность лучше 50 м по GPS; сеть даёт грубое место сразу
+                geoAnswer(l, null);
+                if (!LocationManager.NETWORK_PROVIDER.equals(l.getProvider()) || !l.hasAccuracy() || l.getAccuracy() < 50) {
+                    stopLocate();
+                }
+            }
+            @Override public void onStatusChanged(String p, int s, Bundle b) { }
+            @Override public void onProviderEnabled(String p) { }
+            @Override public void onProviderDisabled(String p) { }
+        };
+        try {
+            if (gps) lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000, 0, locListener, Looper.getMainLooper());
+            if (net) lm.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 1000, 0, locListener, Looper.getMainLooper());
+        } catch (Exception e) {
+            stopLocate();
+            geoAnswer(null, "нет доступа к местоположению");
+            return;
+        }
+        final LocationListener mine = locListener;
+        ui.postDelayed(() -> {
+            if (locListener == mine) {
+                stopLocate();
+                if (fallback == null) geoAnswer(null, "спутники не найдены, выйдите на открытое место");
+            }
+        }, LOC_TIMEOUT);
+    }
+
+    private void stopLocate() {
+        if (locListener != null) {
+            try {
+                ((LocationManager) getSystemService(LOCATION_SERVICE)).removeUpdates(locListener);
+            } catch (Exception ignored) { }
+            locListener = null;
+        }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
+        super.onRequestPermissionsResult(requestCode, permissions, results);
+        if (requestCode == REQ_LOC) {
+            if (hasLocPermission()) startLocate();
+            else geoAnswer(null, "нет разрешения на местоположение");
+        }
+    }
+
+    @Override
+    protected void onPause() {
+        stopLocate();
+        super.onPause();
+    }
+
     private static String safeName(String name) {
         String n = name == null ? "" : name.replaceAll("[\\\\/:*?\"<>|\\r\\n]", "_").trim();
         return n.isEmpty() ? "karta-seti.json" : n;
@@ -624,6 +737,17 @@ public class MainActivity extends Activity {
                 } catch (Exception e) {
                     pendingSaveText = null;
                     js("window.__kartaSaved && window.__kartaSaved(false)");
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public void locate() {
+            runOnUiThread(() -> {
+                if (hasLocPermission()) {
+                    startLocate();
+                } else if (Build.VERSION.SDK_INT >= 23) {
+                    requestPermissions(new String[]{Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION}, REQ_LOC);
                 }
             });
         }

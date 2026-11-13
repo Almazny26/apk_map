@@ -34,7 +34,7 @@
     'body.pc #toggle,body.pc #modal{display:none!important}',
     'body.pc #mapKinds{top:' + (HEADER + 10) + 'px;right:10px}',
     'body.pc #mapKinds button{padding:7px 12px;font-size:13px}',
-    'body:has(#addA.active) #map,body:has(#addB.active) #map,body:has(#addMore.active) #map,body:has(#nodeArm.active) #map{cursor:crosshair}',
+    'body:has(#addA.active) #map,body:has(#addB.active) #map,body:has(#addMore.active) #map,body:has(#nodeArm.active) #map,body:has(#netAdd.active) #map{cursor:crosshair}',
     'body:has(#addA.active) #map .leaflet-interactive,body:has(#addB.active) #map .leaflet-interactive{cursor:crosshair}',
 
     // окна
@@ -82,6 +82,11 @@
     '#pcProfileEmpty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:13px;padding:20px;text-align:center}',
 
     // диалоги приложения (история, обмен данными) — окна без затемнения экрана
+    '#netDlg.pcw{inset:auto;background:var(--panel);align-items:stretch;justify-content:flex-start}',
+    '#netDlg.pcw:not(.show){display:none}',
+    '#netDlg.pcw.show{display:flex}',
+    '#netDlg.pcw #netDlgBox{width:auto;max-width:none;max-height:none;overflow:visible;border-radius:0}',
+    '#netDlg.pcw #netDlgBox>h3{display:none}',
     '#hist.pcw,#kartaEx.pcw{inset:auto;background:var(--panel);align-items:stretch;justify-content:flex-start}',
     '#hist.pcw:not(.show),#kartaEx.pcw:not(.show){display:none}',
     '#hist.pcw.show,#kartaEx.pcw.show{display:flex}',
@@ -290,13 +295,18 @@
   tool.el.id = 'pcTool';
   tool.body.appendChild($('panel'));
   tool.body.appendChild($('panelFiber'));
+  if ($('panelNet')) tool.body.appendChild($('panelNet'));
   function toolTitle() {
-    tool.setTitle($('panel').classList.contains('off') ? 'ВОЛС — паспорт линии и расчёт кабеля' : 'Радиолиния — профиль и оборудование');
+    var net = $('panelNet') && !$('panelNet').classList.contains('off');
+    tool.setTitle(net ? 'Сеть — узлы и линии' :
+      $('panel').classList.contains('off') ? 'ВОЛС — паспорт линии и расчёт кабеля' : 'Радиолиния — профиль и оборудование');
   }
   toolTitle();
-  new MutationObserver(toolTitle).observe($('panel'), { attributes: true, attributeFilter: ['class'] });
-  ['tabRadio', 'tabFiber'].forEach(function (id) {
-    $(id).addEventListener('click', function () { showWin(tool); });
+  ['panel', 'panelNet'].forEach(function (id) {
+    if ($(id)) new MutationObserver(toolTitle).observe($(id), { attributes: true, attributeFilter: ['class'] });
+  });
+  ['tabNet', 'tabRadio', 'tabFiber'].forEach(function (id) {
+    if ($(id)) $(id).addEventListener('click', function () { showWin(tool); });
   });
   front(tool);
 
@@ -384,6 +394,11 @@
     return w;
   }
   var histWin = dialogWin($('hist'), 'hist', 'История профилей', function () { return $('histClose'); }, [560, 620]);
+  var netWin = $('netDlg') ? dialogWin($('netDlg'), 'netdlg', 'Сеть', function () { return $('netDlgClose'); }, [480, 560]) : null;
+  if (netWin) new MutationObserver(function () {
+    var h = $('netDlgBox').querySelector('h3');
+    netWin.setTitle(h ? h.textContent : 'Сеть');
+  }).observe($('netDlgBox'), { childList: true });
   var fileWin = $('kartaEx') ? dialogWin($('kartaEx'), 'file', 'Обмен данными', function () {
     return $('kartaEx').querySelector('[data-kx=close]');
   }, [540, 560]) : null;
@@ -495,6 +510,7 @@
     ['addA', 'addB', 'addMore', 'nodeArm'].forEach(function (id) {
       if ($(id).classList.contains('active')) { $(id).classList.remove('active'); any = true; }
     });
+    if ($('netAdd') && $('netAdd').classList.contains('active')) { $('netAdd').click(); any = true; }
     if (typeof mode !== 'undefined' && mode) { mode = null; any = true; }
     if (typeof armNode !== 'undefined' && armNode) { armNode = false; any = true; }
     if (any) status('Постановка точки отменена');

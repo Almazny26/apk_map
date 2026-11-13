@@ -15,7 +15,8 @@
   'use strict';
 
   var FORMAT = 'karta-seti', KIND = 'fresnel', HIST_MAX = 25;
-  var KEYS = ['wf_session', 'wf_nodes', 'wf_hist'];
+  var KEYS = ['wf_session', 'wf_nodes', 'wf_hist', 'karta_net', 'karta_cur'];
+  var NET = window.KartaNet || null;   // постоянная карта сети (net.js)
   var PREV = 'karta_prev';
   var android = window.KartaFiles || null;
   var pc = !!window.KartaPC;
@@ -27,12 +28,14 @@
   }
 
   function current() {
-    return { session: read('wf_session', null), nodes: read('wf_nodes', []), hist: read('wf_hist', []) };
+    var d = { session: read('wf_session', null), nodes: read('wf_nodes', []), hist: read('wf_hist', []) };
+    if (NET) d.net = NET.data();
+    return d;
   }
 
   function pack() {
     return {
-      format: FORMAT, kind: KIND, version: 1, app: 'Карта сети',
+      format: FORMAT, kind: KIND, version: 2, app: 'Карта сети',
       created: Date.now(), source: android ? 'Телефон' : pc ? 'Компьютер' : 'Браузер',
       data: current()
     };
@@ -47,6 +50,7 @@
     if (d.session != null && (typeof d.session !== 'object' || !Array.isArray(d.session.points))) return 'Файл повреждён: неверные точки радиолинии.';
     if (d.nodes != null && !Array.isArray(d.nodes)) return 'Файл повреждён: неверный паспорт линии.';
     if (d.hist != null && !Array.isArray(d.hist)) return 'Файл повреждён: неверная история.';
+    if (d.net != null && (typeof d.net !== 'object' || typeof d.net.objs !== 'object')) return 'Файл повреждён: неверные данные сети.';
     return null;
   }
 
@@ -63,14 +67,21 @@
     return out.slice(0, HIST_MAX);
   }
 
-  function apply(p) {
+  function hasWork(d) { return !!((d.session && d.session.points && d.session.points.length) || (d.nodes && d.nodes.length)); }
+  function netCount(d) { if (!NET || !d.net) return 0; var c = NET.counts(d.net); return c.node + c.radio + c.fiber; }
+
+  function apply(p, withWork) {
     var before = {};
     KEYS.forEach(function (k) { before[k] = localStorage.getItem(k); });
     localStorage.setItem(PREV, JSON.stringify({ saved: Date.now(), keys: before }));
     var d = p.data;
-    if (d.session) localStorage.setItem('wf_session', JSON.stringify(d.session));
-    else localStorage.removeItem('wf_session');
-    localStorage.setItem('wf_nodes', JSON.stringify(d.nodes || []));
+    if (withWork) {
+      if (d.session) localStorage.setItem('wf_session', JSON.stringify(d.session));
+      else localStorage.removeItem('wf_session');
+      localStorage.setItem('wf_nodes', JSON.stringify(d.nodes || []));
+      localStorage.removeItem('karta_cur');   // открытая линия больше не соответствует точкам
+    }
+    if (NET && d.net) NET.merge(d.net);
     localStorage.setItem('wf_hist', JSON.stringify(mergeHist(read('wf_hist', []), d.hist || [])));
     location.reload();   // приложение само восстановит точки, паспорт и историю из хранилища
   }
@@ -104,6 +115,12 @@
     return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + '_' + p(d.getHours()) + '-' + p(d.getMinutes());
   }
 
+  function netRow(d) {
+    if (!NET || !d.net) return '';
+    var c = NET.counts(d.net);
+    return '<tr><td>Сеть</td><td>узлов ' + c.node + ', радиолиний ' + c.radio + ', ВОЛС ' + c.fiber + '</td></tr>';
+  }
+
   function describe(d) {
     var s = d.session, pts = s && s.points ? s.points.length : 0, nodes = (d.nodes || []).length, hist = (d.hist || []).length;
     var radio = pts ? pts + ' ' + (pts === 1 ? 'точка' : pts < 5 ? 'точки' : 'точек') + (s.freq ? ', ' + esc(s.freq) + ' МГц' : '') : 'нет точек';
@@ -112,7 +129,7 @@
     var fiber = nodes ? nodes + ' (' + Object.keys(kinds).map(function (k) { return esc(k) + ' ' + kinds[k]; }).join(', ') + ')' : 'пусто';
     return '<table class="kx-t"><tr><td>Радиолиния</td><td>' + radio + '</td></tr>' +
       '<tr><td>Паспорт линии</td><td>' + fiber + '</td></tr>' +
-      '<tr><td>История профилей</td><td>' + (hist || 'пусто') + '</td></tr></table>';
+      '<tr><td>История профилей</td><td>' + (hist || 'пусто') + '</td></tr>' + netRow(d) + '</table>';
   }
 
   // ------------------------------------------------------------------ окно
@@ -129,6 +146,8 @@
     '#kartaExBox button.kx-2{background:transparent;color:var(--accent);border:1px solid var(--accent)}' +
     '#kartaExBox .kx-muted{color:var(--muted);font-size:13px}' +
     '#kartaExBox .kx-msg{background:var(--card);border-radius:8px;padding:8px 10px;margin:8px 0}' +
+    '#kartaExBox .kx-chk{display:flex;gap:8px;align-items:flex-start;margin:8px 0;font-size:14px;color:var(--text)}' +
+    '#kartaExBox .kx-chk input{margin-top:3px}' +
     '#kartaExBox .kx-warn{background:var(--warnbg);border-radius:8px;padding:8px 10px;margin:8px 0}' +
     '.kx-t{border-collapse:collapse;width:100%;margin:4px 0}.kx-t td{padding:4px 6px 4px 0;border-bottom:1px solid var(--line);vertical-align:top}' +
     '.kx-t td:first-child{color:var(--muted);width:42%}' +
@@ -156,16 +175,14 @@
     if (pending) {
       html += '<h3>Загрузить данные из файла?</h3>' +
         '<p class="kx-muted">' + esc(pending.name || 'файл') + ' · ' + esc(pending.pkg.source || '') + ', ' + when(pending.pkg.created) + '</p>' +
-        describe(pending.pkg.data) +
-        '<div class="kx-warn">Точки радиолинии и паспорт линии заменятся данными из файла, история профилей дополнится. ' +
-        'Нынешнее состояние можно будет вернуть кнопкой «Вернуть как было».</div>' +
+        describe(pending.pkg.data) + importNote(pending.pkg.data) +
         '<div class="kx-row"><button type="button" data-kx="apply">Загрузить</button>' +
         '<button type="button" class="kx-2" data-kx="cancel">Отмена</button></div>';
       box.innerHTML = html;
       return;
     }
     html += '<h3>Сейчас в приложении</h3>' + describe(current());
-    html += '<h3>Экспорт</h3><p class="kx-muted">Сохранить точки радиолинии, паспорт линии и историю в файл — чтобы переслать ' +
+    html += '<h3>Экспорт</h3><p class="kx-muted">Сохранить сеть (узлы и линии), текущую работу и историю в файл — чтобы переслать ' +
       'или открыть на другом телефоне или компьютере.</p><div class="kx-row">' +
       (android ? '<button type="button" data-kx="share">Поделиться файлом</button>' : '') +
       '<button type="button"' + (android ? ' class="kx-2"' : '') + ' data-kx="save">Сохранить в файл</button></div>';
@@ -177,6 +194,20 @@
         '<div class="kx-row"><button type="button" class="kx-2" data-kx="undo">Вернуть как было</button></div>';
     }
     box.innerHTML = html;
+  }
+
+  function importNote(d) {
+    var html = '', net = netCount(d);
+    if (NET && d.net) {
+      var r = NET.preview(d.net);
+      html += '<div class="kx-msg">Сеть объединится с вашей: новых объектов ' + r.added + ', изменённых ' + r.changed +
+        (r.deleted ? ', удалённых ' + r.deleted : '') + '. Ваши правки, сделанные позже, сохранятся.</div>';
+    }
+    if (hasWork(d)) {
+      html += '<label class="kx-chk"><input type="checkbox" id="kxWork"' + (net ? '' : ' checked') + '> ' +
+        'Загрузить и текущую работу из файла: точки радиолинии и паспорт линии заменят открытые сейчас</label>';
+    }
+    return html + '<div class="kx-warn">История профилей дополнится. Если что-то не так, всё можно вернуть кнопкой «Вернуть как было».</div>';
   }
 
   function show() { wrap.classList.add('show'); render(); }
@@ -219,7 +250,7 @@
     } else if (act === 'open') {
       if (android) android.openFile(); else picker.click();
     } else if (act === 'apply') {
-      if (pending) apply(pending.pkg);
+      if (pending) { var w = box.querySelector('#kxWork'); apply(pending.pkg, w ? w.checked : false); }
     } else if (act === 'cancel') {
       pending = null; render();
     } else if (act === 'undo') {
