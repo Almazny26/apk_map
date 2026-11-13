@@ -251,7 +251,10 @@
   btn.type = 'button';
   btn.textContent = 'Файл';
   btn.onclick = show;
-  if (hist && hist.parentNode) hist.parentNode.insertBefore(btn, hist.nextSibling);
+  if (hist && hist.parentNode) {
+    hist.parentNode.insertBefore(btn, hist.nextSibling);
+    hist.parentNode.insertBefore(document.createTextNode(' '), btn);   // как между остальными кнопками
+  }
   else document.body.appendChild(btn);
 
   if (android && android.ready) android.ready();

@@ -35,7 +35,7 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 WEB = os.path.join(ROOT, "web")
 HOST = "127.0.0.1"
 PORT = 8790
-VERSION = "2.0"
+VERSION = "2.1"
 
 mimetypes.add_type("text/javascript", ".js")
 mimetypes.add_type("application/json", ".json")
@@ -302,6 +302,9 @@ def make_handler(app):
                 tag = '<script src="leaflet/leaflet.js"></script>'
                 inject = tag + '\n<script src="pc.js?v=%s"></script>' % VERSION
                 html = html.replace(tag, inject, 1) if tag in html else html.replace("<head>", "<head>\n" + inject, 1)
+                # оформление для компьютера (окна, строка состояния) — после кода приложения и exchange.js
+                ui = '<script src="pc-ui.js?v=%s"></script>\n' % VERSION
+                html = html.replace("</body>", ui + "</body>", 1) if "</body>" in html else html + ui
                 body = html.encode("utf-8")
             if ctype.startswith("text/") or ctype in ("application/json", "text/javascript"):
                 ctype += "; charset=utf-8"

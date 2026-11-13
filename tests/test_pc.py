@@ -66,6 +66,8 @@ class ServerTest(unittest.TestCase):
         self.assertIn('<script src="leaflet/leaflet.js"></script>\n<script src="pc.js', html)
         self.assertIn('exchange.js', html)
         self.assertLess(html.index("pc.js"), html.index("const map = L.map"))
+        self.assertLess(html.index("exchange.js"), html.index("pc-ui.js"))
+        self.assertLess(html.index("pc-ui.js"), html.index("</body>"))
         with self.get("/tiles/8/159/91.png") as r:
             self.assertEqual(r.headers.get_content_type(), "image/png")
         with self.assertRaises(urllib.error.HTTPError):
