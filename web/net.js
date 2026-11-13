@@ -23,7 +23,21 @@
   var pc = !!window.KartaPC, android = window.KartaFiles || null;
   var $ = function (id) { return document.getElementById(id); };
 
-  var NODE_KINDS = ['узел доступа', 'опорный узел', 'базовая станция', 'коммутатор', 'клиент', 'другое'];
+  var NODE_KINDS = ['узел доступа', 'узел агрегации', 'опорный узел', 'базовая станция', 'коммутатор', 'клиент', 'другое'];
+  // форма значка по виду узла — как в прежней «Карте сети» 1.3 (кружок, квадрат, ромб, треугольник…)
+  var SHAPE = {
+    'узел доступа': '<circle cx="12" cy="12" r="8"/>',
+    'узел агрегации': '<rect x="4.5" y="4.5" width="15" height="15" rx="2"/>',
+    'опорный узел': '<path d="M12 2.2 21.8 12 12 21.8 2.2 12Z"/>',
+    'базовая станция': '<path d="M12 2.6 21.6 19.6H2.4Z"/>',
+    'коммутатор': '<rect x="2.4" y="6.8" width="19.2" height="10.4" rx="2"/>',
+    'клиент': '<circle cx="12" cy="12" r="5.2"/>',
+    'другое': '<path d="M12 2.6 20.2 7.3V16.7L12 21.4 3.8 16.7V7.3Z"/>'
+  };
+  function shapeSvg(kind, color, px) {
+    return '<svg class="nm-shape" width="' + px + '" height="' + px + '" viewBox="0 0 24 24"><g fill="' + color +
+      '" stroke="#fff" stroke-width="2.4" stroke-linejoin="round">' + (SHAPE[kind] || SHAPE['другое']) + '</g></svg>';
+  }
   var STATES = {
     'работает': '#2e7d32',
     'авария': '#c62828',
@@ -160,8 +174,10 @@
 
   var css = document.createElement('style');
   css.textContent = [
-    '.nm-node{width:16px;height:16px;border-radius:50%;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.5);box-sizing:border-box}',
-    '.nm-node.k-big{width:20px;height:20px;border-radius:4px}',
+    '.nm-shape{display:block;overflow:visible;filter:drop-shadow(0 1px 2px rgba(0,0,0,.55))}',
+    '.nm-legend{display:flex;flex-wrap:wrap;gap:4px 12px;margin:4px 0 2px;font-size:12px;color:var(--muted)}',
+    '.nm-legend span{display:inline-flex;align-items:center;gap:4px}',
+    '.nm-legend .nm-shape{filter:none}',
     '.nm-lbl{position:absolute;left:50%;top:100%;transform:translateX(-50%);margin-top:2px;white-space:nowrap;font:600 11px/1.2 sans-serif;' +
       'color:#1a1a1a;text-shadow:0 0 3px #fff,0 0 3px #fff,0 0 3px #fff;pointer-events:none}',
     '.nm-nolabels .nm-lbl{display:none}',
@@ -178,7 +194,9 @@
     '#panelNet .nm-list{margin:6px 0}',
     '#panelNet .nm-item{display:flex;gap:8px;align-items:center;cursor:pointer}',
     '#panelNet .nm-item:hover{border-color:var(--accent)}',
-    '#panelNet .nm-ico{flex:0 0 14px;height:14px;border-radius:50%}',
+    '#panelNet .nm-ico{flex:0 0 18px;height:14px;border-radius:50%}',
+    '#panelNet .nm-item .nm-shape{flex:0 0 18px}',
+    '.nm-legend i{display:inline-block}',
     '#panelNet .nm-ico.l{height:4px;border-radius:2px}',
     '#panelNet .nm-ico.r{height:0;border-top:3px dashed #1565c0;border-radius:0}',
     '#panelNet .nm-txt{flex:1;min-width:0}',
@@ -263,11 +281,11 @@
   var drawn = {};   // id → слой, для перехода к объекту из списка
 
   function nodeIcon(o) {
-    var color = STATES[o.f.state] || '#455a64', big = o.f.kind === 'опорный узел';
+    var color = STATES[o.f.state] || '#455a64', px = o.f.kind === 'опорный узел' || o.f.kind === 'базовая станция' ? 26 : 22;
     return L.divIcon({
       className: '',
-      html: '<div class="nm-node' + (big ? ' k-big' : '') + '" style="background:' + color + '"></div><div class="nm-lbl">' + esc(o.f.name) + '</div>',
-      iconSize: big ? [20, 20] : [16, 16], iconAnchor: big ? [10, 10] : [8, 8], popupAnchor: [0, -8]
+      html: shapeSvg(o.f.kind, color, px) + '<div class="nm-lbl">' + esc(o.f.name) + '</div>',
+      iconSize: [px, px], iconAnchor: [px / 2, px / 2], popupAnchor: [0, -px / 2]
     });
   }
 
@@ -653,6 +671,8 @@
     '<div class="row"><input type="search" id="netSearch" placeholder="Поиск: название, адрес, примечание">' +
     '<select id="netFilter"><option value="all">Всё</option><option value="node">Узлы</option><option value="radio">Радиолинии</option>' +
     '<option value="fiber">ВОЛС</option><option value="авария">Аварии</option><option value="работы">Работы</option><option value="план">План</option></select></div>' +
+    '<div class="nm-legend">' + NODE_KINDS.map(function (k) { return '<span>' + shapeSvg(k, '#607d8b', 14) + esc(k) + '</span>'; }).join('') + '</div>' +
+    '<div class="nm-legend">' + Object.keys(STATES).map(function (k) { return '<span><i style="width:10px;height:10px;border-radius:50%;background:' + STATES[k] + '"></i>' + k + '</span>'; }).join('') + '</div>' +
     '<div id="netList" class="nm-list"></div>' +
     '<div class="nm-muted">Подпись изменений: <b id="netWho"></b> <a id="netWhoEdit" style="color:var(--accent);cursor:pointer">изменить</a></div>';
   $('panelFiber').parentNode.insertBefore(panel, $('panelFiber').nextSibling);
@@ -721,7 +741,7 @@
     el.innerHTML = list.slice(0, 300).map(function (o) {
       var f = o.f, ico, sub;
       if (o.type === 'node') {
-        ico = '<span class="nm-ico" style="background:' + (STATES[f.state] || '#455a64') + '"></span>';
+        ico = shapeSvg(f.kind, STATES[f.state] || '#455a64', 18);
         sub = esc(f.kind || '') + ' · ' + esc(f.state || '') + (f.addr ? ' · ' + esc(f.addr) : '');
       } else if (o.type === 'radio') {
         ico = '<span class="nm-ico r"></span>';

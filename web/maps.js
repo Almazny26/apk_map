@@ -32,7 +32,13 @@
     minZoom: 3, maxZoom: 19, maxNativeZoom: 19, zIndex: 1, errorTileUrl: BLANK,
     attribution: '&copy; участники OpenStreetMap'
   });
-  [sat, hybSat].forEach(function (l) { l.options.attribution = 'Снимки &copy; Esri'; l.options.errorTileUrl = BLANK; l.setZIndex(2); });
+  [sat, hybSat].forEach(function (l) {
+    l.options.attribution = 'Снимки &copy; Esri'; l.options.errorTileUrl = BLANK; l.setZIndex(2);
+    // где снимка такого масштаба нет, Esri по умолчанию отдаёт картинку «Map data not yet available»;
+    // с blankTile=false — ошибку, и тогда показывается увеличенный снимок мельче (см. ниже).
+    // На компьютере адрес уже заменён на программу (pc.js), она добавляет параметр сама.
+    if (/^https:\/\/server\.arcgisonline\.com\//.test(l._url) && l._url.indexOf('blankTile') < 0) l.setUrl(l._url + '?blankTile=false', true);
+  });
   hybNames.options.attribution = 'Подписи &copy; Яндекс';
   hybNames.options.errorTileUrl = BLANK;
   hybNames.setZIndex(3);
@@ -45,6 +51,35 @@
   document.head.appendChild(css);
   var attr = L.control.attribution({ prefix: false, position: 'bottomright' }).addTo(map);
   L.DomUtil.addClass(attr.getContainer(), 'nm-attr');
+
+  // ---------------------------------------------------------------- плитки не пришли — показать крупнее
+
+  /* Если плитки нет (снимка такого масштаба нет или связь оборвалась), вместо пустого квадрата
+   * берётся плитка на 1–5 уровней мельче, и из неё вырезается и растягивается нужная четверть.
+   * Мельче плитки обычно уже есть в запасе, поэтому карта не превращается в лоскутное одеяло. */
+  function fallback(layer) {
+    var create = layer.createTile;
+    layer.createTile = function (coords, done) {
+      var t = create.call(this, coords, done);
+      t._kc = { x: coords.x, y: coords.y, z: coords.z };
+      return t;
+    };
+    layer._tileOnError = function (done, tile, e) {
+      var c = tile._kc, up = (tile._kup || 0) + 1, z = c && c.z - up;
+      if (!c || up > 5 || z < 1) return L.TileLayer.prototype._tileOnError.call(this, done, tile, e);
+      tile._kup = up;
+      var k = 1 << up, x = c.x >> up, y = c.y >> up, ts = this.getTileSize().x, part = ts / k;
+      var ox = (c.x - x * k) * part, oy = (c.y - y * k) * part;
+      var url = L.Util.template(this._url, L.extend({ s: this._getSubdomain({ x: x, y: y }), x: x, y: y, z: z, r: '' }, this.options));
+      if (window.__kartaTileUrl) url = window.__kartaTileUrl(url, x, y);
+      if (tile._kbase == null) tile._kbase = tile.style.transform || '';
+      tile.style.transformOrigin = '0 0';
+      tile.style.transform = tile._kbase + ' translate(' + (-ox * k) + 'px,' + (-oy * k) + 'px) scale(' + k + ')';
+      tile.style.clipPath = 'inset(' + oy + 'px ' + (ts - ox - part) + 'px ' + (ts - oy - part) + 'px ' + ox + 'px)';
+      tile.src = url;
+    };
+  }
+  [osm, sat, hybSat].forEach(fallback);
 
   // ---------------------------------------------------------------- «Онлайн» по умолчанию
 
@@ -65,7 +100,9 @@
       current = kind === 'sat' || kind === 'hyb' ? kind : 'off';
       if (current !== 'off' && !online) { $('online').checked = true; applyOnline(true); }
       [osm, sat, hybrid].forEach(function (l) { if (map.hasLayer(l)) map.removeLayer(l); });
-      if (!map.hasLayer(offlineTiles)) offlineTiles.addTo(map);
+      // вшитая схема — подложка только для схемы: под снимками она даёт лоскуты
+      if (current === 'off' && !map.hasLayer(offlineTiles)) offlineTiles.addTo(map);
+      if (current !== 'off' && map.hasLayer(offlineTiles)) map.removeLayer(offlineTiles);
       var layer = current === 'sat' ? sat : current === 'hyb' ? hybrid : (online ? osm : null);
       if (layer) { layer.addTo(map); if (typeof watchTiles === 'function') watchTiles(layer); }
       $('mapOff').classList.toggle('on', current === 'off');

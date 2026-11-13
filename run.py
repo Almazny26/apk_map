@@ -13,6 +13,7 @@
 """
 import argparse
 import array
+import hashlib
 import json
 import math
 import mimetypes
@@ -25,6 +26,7 @@ import sys
 import threading
 import time
 import traceback
+import urllib.error
 import urllib.parse
 import urllib.request
 import webbrowser
@@ -183,10 +185,13 @@ class TileCache:
 
     SOURCES = {
         "osm": "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
-        "sat": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        # blankTile=false: где снимка нет, Esri отвечает 404, а не картинкой «Map data not yet available»
+        "sat": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}?blankTile=false",
         "skl": "https://core-renderer-tiles.maps.yandex.net/tiles?l=skl&x={x}&y={y}&z={z}&scale=1&lang=ru_RU&projection=web_mercator",
     }
     FRESH = 30 * 86400          # обновлять плитку не чаще раза в 30 дней
+    NONE = 7 * 86400            # «такой плитки нет» помним неделю
+    ESRI_EMPTY = "f27d9de7f80c13501f470595e327aa6d"
     LIMIT = 1024 ** 3           # не больше 1 ГБ на диске
     UA = "KartaSeti/%s (Windows; https://github.com/Almazny26/apk_map)"
 
@@ -214,16 +219,44 @@ class TileCache:
         if os.path.exists(path):
             with open(path, "rb") as f:
                 cached = f.read()
+            if src == "sat" and len(cached) == 2521 and hashlib.md5(cached).hexdigest() == self.ESRI_EMPTY:
+                # заглушка «Map data not yet available», сохранённая версией 2.3, — выбросить
+                cached = None
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+        if cached is not None:
             if time.time() - os.path.getmtime(path) < self.FRESH or not self.online():
                 return cached, self.kind(cached)
         elif not self.online():
             return None
+        else:
+            none = path + ".none"
+            if os.path.exists(none) and time.time() - os.path.getmtime(none) < self.NONE:
+                return None
+        data = None
+        url = self.SOURCES[src].format(z=z, x=x, y=y)
+        for attempt in (1, 2):   # связь бывает медленной — вторая попытка
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": self.UA % VERSION})
+                with urllib.request.urlopen(req, timeout=20) as r:
+                    data = r.read(4 * 1024 * 1024)
+                break
+            except urllib.error.HTTPError as e:
+                if e.code == 404 and cached is None:
+                    # такой плитки у источника нет (например, снимка этого масштаба) — не спрашиваем неделю
+                    try:
+                        os.makedirs(os.path.dirname(path), exist_ok=True)
+                        open(path + ".none", "wb").close()
+                    except OSError:
+                        pass
+                    return None
+                break
+            except Exception:
+                continue
         try:
-            url = self.SOURCES[src].format(z=z, x=x, y=y)
-            req = urllib.request.Request(url, headers={"User-Agent": self.UA % VERSION})
-            with urllib.request.urlopen(req, timeout=12) as r:
-                data = r.read(4 * 1024 * 1024)
-            if len(data) < 60 or self.kind(data) is None:
+            if data is None or len(data) < 60 or self.kind(data) is None:
                 raise ValueError("не картинка")
             os.makedirs(os.path.dirname(path), exist_ok=True)
             tmp = path + ".%d.tmp" % threading.get_ident()
@@ -307,6 +340,10 @@ def make_handler(app):
         def _guard(self):
             """Только этот компьютер и только эта программа: чужие страницы в браузере сюда не достучатся."""
             host = (self.headers.get("Host") or "").rsplit(":", 1)[0].strip("[]").lower()
+            # t1…t4.localhost — тот же компьютер; через них браузер грузит плитки вчетверо параллельнее
+            if re.match(r"^t[1-4]\.localhost$", host) and self.command == "GET" and \
+                    re.match(r"^/(tc/|tiles/|icon\.png)", urllib.parse.urlsplit(self.path).path):
+                return
             if host not in ("127.0.0.1", "localhost"):
                 raise HttpError(403, "Программа доступна только на этом компьютере")
             origin = self.headers.get("Origin")

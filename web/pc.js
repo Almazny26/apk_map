@@ -77,6 +77,20 @@
       }
       return tileLayer.call(this, url, opts);
     };
+    // Браузер грузит с одного адреса не больше 6 плиток сразу. Программа отвечает и по адресам
+    // t1…t4.localhost (это тот же компьютер) — плитки идут вчетверо параллельнее. Сначала проверяем,
+    // что такие адреса работают; до ответа и при ошибке — обычный адрес.
+    var spread = false, port = location.port;
+    window.__kartaTileUrl = function (u, x, y) {
+      return spread && u.charAt(0) === '/' ? 'http://t' + (1 + ((x + y) & 3)) + '.localhost:' + port + u : u;
+    };
+    var probe = new Image();
+    probe.onload = function () { spread = true; };
+    probe.src = 'http://t1.localhost:' + port + '/icon.png?probe=' + Date.now();
+    var getTileUrl = L.TileLayer.prototype.getTileUrl;
+    L.TileLayer.prototype.getTileUrl = function (coords) {
+      return window.__kartaTileUrl(getTileUrl.call(this, coords), coords.x, coords.y);
+    };
   }
 
   // ---------------------------------------------------------------- замена оболочки Android

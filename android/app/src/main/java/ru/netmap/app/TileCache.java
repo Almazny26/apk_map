@@ -23,13 +23,16 @@ import java.util.Map;
  * Плитка, открытая с интернетом, сохраняется в памяти приложения и потом показывается без связи
  * (как кэш браузера, только надёжнее: не теряется при нехватке места). Обновляется не чаще раза
  * в 30 дней. Всего не больше 500 МБ — при превышении удаляются самые старые.
- * Без «Онлайн» в интернет не ходим: только то, что уже есть.
+ * Без «Онлайн» в интернет не ходим: только то, что уже есть. Если источник ответил «такой плитки
+ * нет» (404 — например, снимка этого масштаба), неделю его об этой плитке не спрашиваем.
  */
 final class TileCache {
     private static final String[] HOSTS = {
             "tile.openstreetmap.org", "server.arcgisonline.com", "core-renderer-tiles.maps.yandex.net"
     };
     private static final long FRESH = 30L * 24 * 3600 * 1000;
+    private static final long NONE = 7L * 24 * 3600 * 1000;   // «такой плитки нет» помним неделю
+    private static final int MISSING = -404;
     private static final long LIMIT = 500L * 1024 * 1024;
     private static final String UA = "KartaSeti/2 (Android; https://github.com/Almazny26/apk_map)";
 
@@ -59,10 +62,21 @@ final class TileCache {
             }
         }
         if (online) {
-            byte[] fresh = download(url);
+            File none = new File(dir, key(url) + ".none");
+            if (cached == null && none.exists() && System.currentTimeMillis() - none.lastModified() < NONE) {
+                return missing();
+            }
+            int[] code = new int[1];
+            byte[] fresh = download(url, code);
+            if (fresh == null && code[0] != MISSING) {
+                fresh = download(url, code);   // связь бывает медленной — вторая попытка
+            }
             if (fresh != null) {
                 write(f, fresh);
                 return image(fresh);
+            }
+            if (code[0] == MISSING && cached == null) {
+                write(none, new byte[0]);      // у источника такой плитки нет (например, снимка этого масштаба)
             }
         }
         return cached != null ? image(cached) : missing();
@@ -93,14 +107,20 @@ final class TileCache {
         return png || jpg;
     }
 
-    private static byte[] download(String url) {
+    private static byte[] download(String url, int[] code) {
         HttpURLConnection c = null;
+        code[0] = 0;
         try {
             c = (HttpURLConnection) new URL(url).openConnection();
-            c.setConnectTimeout(8000);
-            c.setReadTimeout(12000);
+            c.setConnectTimeout(10000);
+            c.setReadTimeout(20000);
             c.setRequestProperty("User-Agent", UA);
-            if (c.getResponseCode() != 200) {
+            int rc = c.getResponseCode();
+            if (rc == 404) {
+                code[0] = MISSING;
+                return null;
+            }
+            if (rc != 200) {
                 return null;
             }
             try (InputStream in = c.getInputStream()) {
