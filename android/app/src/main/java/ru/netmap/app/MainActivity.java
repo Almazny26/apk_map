@@ -132,11 +132,17 @@ public class MainActivity extends Activity {
 
     @Override
     public void onBackPressed() {
-        if (web != null && web.canGoBack()) {
-            web.goBack();
-        } else {
+        // «Назад» сначала закрывает открытое на странице (окно, меню, карточку, нанесение линии);
+        // если закрывать нечего — приложение сворачивается, а не закрывается
+        if (web == null) {
             super.onBackPressed();
+            return;
         }
+        web.evaluateJavascript("(window.__kartaBack && window.__kartaBack()) ? 1 : 0", v -> {
+            if (!"1".equals(v)) {
+                moveTaskToBack(true);
+            }
+        });
     }
 
     // ------------------------------------------------------------------ страница

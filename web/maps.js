@@ -126,10 +126,12 @@
     if (!window.protomapsL) return null;
     var src = new protomapsL.PmtilesSource('karta-offline.pmtiles', true);
     src.p.source = makeSource('karta-offline-' + info.size + '-' + (info.mtime || 0));
-    var bg = '#e2dfda';   // фон плитки — цвет суши (море рисуется поверх)
-    var l = protomapsL.leafletLayer({ url: src.p, flavor: 'light', lang: 'ru', maxDataZoom: 15, minZoom: 3, maxZoom: 19,
+    var dark = document.body.classList.contains('dark');
+    var bg = dark ? '#1f1f1f' : '#e2dfda';   // фон плитки — цвет суши (море рисуется поверх)
+    var l = protomapsL.leafletLayer({ url: src.p, flavor: dark ? 'dark' : 'light', lang: 'ru', maxDataZoom: 15, minZoom: 3, maxZoom: 19,
       attribution: '&copy; участники OpenStreetMap' });
     l.backgroundColor = bg;
+    l.options.className = 'karta-vec';   // в тёмной теме карта уже тёмная — приглушать её не надо
     l.setZIndex && l.setZIndex(0);
     return l;
   }
@@ -162,7 +164,14 @@
   function noNet() { return !online || navigator.onLine === false; }
   window.addEventListener('online', function () { useMap(current); });
   window.addEventListener('offline', function () { useMap(current); });
-  window.KartaMap = { info: function () { return vecInfo; }, reload: loadVec };
+  window.KartaMap = { info: function () { return vecInfo; }, reload: loadVec,
+    // тема сменилась — офлайн-карта перерисовывается в светлых или тёмных цветах
+    retheme: function () {
+      if (!vec) return;
+      if (map.hasLayer(vec)) map.removeLayer(vec);
+      vec = vecLayer(vecInfo);
+      useMap(current);
+    } };
 
   // ---------------------------------------------------------------- выбор подложки
 

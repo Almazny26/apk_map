@@ -38,7 +38,7 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 WEB = os.path.join(ROOT, "web")
 HOST = "127.0.0.1"
 PORT = 8790
-VERSION = "3.0"
+VERSION = "3.1"
 
 mimetypes.add_type("text/javascript", ".js")
 mimetypes.add_type("application/json", ".json")

@@ -76,8 +76,27 @@
     return empty();
   }
   var db = load();
+  /* «Отменить»: перед каждой серией правок (паузы меньше четверти секунды — одна серия) запоминается прежняя сеть */
+  var undoStack = [], lastJson = JSON.stringify(db.objs), lastPush = 0;
   function save() {
+    var now = Date.now(), cur = JSON.stringify(db.objs);
+    if (cur !== lastJson) {
+      if (now - lastPush > 250) { undoStack.push(lastJson); if (undoStack.length > 30) undoStack.shift(); }
+      lastPush = now; lastJson = cur;
+    }
     try { localStorage.setItem(KEY, JSON.stringify(db)); } catch (e) { toast('Не удалось сохранить: память заполнена'); }
+    document.body.classList.toggle('ap-canundo', undoStack.length > 0);
+  }
+  function undo() {
+    if (!undoStack.length || tool || mode !== 'edit') return;
+    db.objs = JSON.parse(undoStack.pop());
+    lastJson = JSON.stringify(db.objs); lastPush = 0;
+    db.journal.unshift({ t: Date.now(), by: author(), id: '', type: '', name: 'Отмена', what: 'последнее изменение отменено' });
+    try { localStorage.setItem(KEY, JSON.stringify(db)); } catch (e) { /* уже сообщали */ }
+    document.body.classList.toggle('ap-canundo', undoStack.length > 0);
+    sel = null; if (view && view.k !== 'search') closeSheet();
+    refresh();
+    toast('Последнее изменение отменено');
   }
   function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
   function author() { return localStorage.getItem(WHO) || (pc ? 'Компьютер' : android ? 'Телефон' : 'Браузер'); }
@@ -111,6 +130,12 @@
   function removeObj(id) {
     var o = get(id);
     if (!o) return;
+    if (o.type === 'node') linesAt(id).forEach(function (l) {
+      var key = l.type === 'radio' ? 'points' : 'fnodes', list = copy(ptsOf(l)), f = {};
+      list.forEach(function (p) { if (p.nid === id) { delete p.nid; p.name = ''; if (p.kind === 'узел') p.kind = 'точка'; } });
+      f[key] = list; f.from = (list[0] && list[0].nid) || ''; f.to = (list[list.length - 1] && list[list.length - 1].nid) || '';
+      put(l.id, l.type, f, 'узел на конце удалён', true);
+    });
     put(id, o.type, { deleted: true }, 'удалён');
   }
 
@@ -167,10 +192,28 @@
     return count;
   }
 
+  // ================================================================== настройки (хранение)
+
+  var SET = 'karta_set';
+  var DEF = { theme: localStorage.getItem('wf_theme') === 'dark' ? 'dark' : 'light', ui: 1, mapDim: true,
+    nodeLbl: 'zoom', lineLbl: 'zoom', nodeSize: 1, lineW: 1, linePts: 'near', scale: true, zoomBtns: true,
+    start: 'view', tap: true, longMs: 550, vibro: true, coords: 'sk42', pcPanel: 380, pcCoords: true };
+  var S = (function () {
+    var r = {}, st = {};
+    try { st = JSON.parse(localStorage.getItem(SET)) || {}; } catch (e) { st = {}; }
+    Object.keys(DEF).forEach(function (k) { r[k] = st[k] != null && typeof st[k] === typeof DEF[k] ? st[k] : DEF[k]; });
+    return r;
+  })();
+  function coord(lat, lng) {
+    var w = (+lat).toFixed(6) + ', ' + (+lng).toFixed(6);
+    if (S.coords === 'wgs') return w;
+    return S.coords === 'both' ? sk(lat, lng) + ' · ' + w : sk(lat, lng);
+  }
+
   // ================================================================== стили
 
-  var css = el('style');
-  css.textContent = [
+  var css = el('style'), cssMap = el('style');
+  var RULES = [
     ':root{--bg:#f2f4f7;--panel:#fff;--text:#1b1f24;--muted:#69737d;--line:#e1e5ea;--accent:#1a73e8;--tonal:#e8f0fe;--card:#f6f8fb;' +
       '--danger:#d93025;--ok:#188038;--shadow:0 1px 2px rgba(16,24,40,.06),0 6px 18px rgba(16,24,40,.14);--font:system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif}',
     'body.dark{--bg:#0f1216;--panel:#1b1f25;--text:#e8eaed;--muted:#9aa3ad;--line:#2f353d;--accent:#7cacf8;--tonal:#233249;--card:#21262e;' +
@@ -179,7 +222,21 @@
     // всё от прежних панелей — скрыть
     'header,.panel,#toggle,#modal,#hist,#kartaEx,#btnFile{display:none!important}',
     '#map{top:56px!important;bottom:0!important;-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}',
-    'body.dark .leaflet-tile-pane{filter:brightness(.82) contrast(1.08)}',
+    'body.dark.ap-dim .leaflet-tile-pane .leaflet-layer:not(.karta-vec){filter:brightness(.82) contrast(1.08)}',
+    'body.dark .leaflet-tile-pane .karta-vec{filter:brightness(1.75) contrast(.92)}',
+    'body.ap-nocoords #apCoords{display:none}',
+    '@media (max-width:899px){body.ap-nozoom .ap-ctl .grp.zoom{display:none}}',
+    '.ap-ctl .grp.undo{display:none}body.ap-edit.ap-canundo:not(.ap-tool) .ap-ctl .grp.undo{display:flex}',
+    '#apHint{position:fixed;left:50%;top:38%;transform:translate(-50%,-50%);z-index:900;max-width:min(320px,80vw);text-align:center;background:var(--panel);color:var(--text);'+
+      'border-radius:16px;padding:14px 18px;box-shadow:var(--shadow);font:14px/1.4 var(--font);pointer-events:none;display:none}',
+    '#apHint b{display:block;font-size:16px;margin-bottom:4px}',
+    '.ap .srow{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--line);flex-wrap:wrap}',
+    '.ap .srow>span{flex:1 1 150px;font-size:14px}.ap .srow .chips{margin:0;flex:0 1 auto}.ap .srow .chip{min-height:32px;padding:5px 11px;font-size:13px}',
+    '.ap .srow small{display:block;color:var(--muted);font-size:12px}',
+    '.ap .sw{margin-left:auto;width:38px;height:22px;border-radius:11px;background:var(--line);position:relative;flex:0 0 38px;cursor:pointer;border:0;padding:0}',
+    '.ap .sw::after{content:"";position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:#fff;transition:left .15s;box-shadow:0 1px 2px rgba(0,0,0,.3)}',
+    '.ap .sw.on{background:var(--accent)}.ap .sw.on::after{left:18px}',
+    '.ap .lgd{display:grid;grid-template-columns:1fr 1fr;gap:8px 14px;font-size:14px;margin:6px 0 10px}.ap .lgd>div{display:flex;align-items:center;gap:8px}',
     // верхняя панель
     '#apBar{position:fixed;left:0;right:0;top:0;height:56px;z-index:1100;display:flex;align-items:center;gap:10px;padding:0 8px 0 12px;' +
       'background:var(--panel);color:var(--text);box-shadow:0 1px 0 var(--line),0 2px 10px rgba(0,0,0,.06)}',
@@ -206,8 +263,8 @@
     // кнопки и поля
     '.ap button.b{border:0;border-radius:11px;padding:10px 14px;min-height:42px;font:600 14px var(--font);cursor:pointer;background:var(--accent);color:#fff}',
     'body.dark .ap button.b{color:#0b1d36}',
-    '.ap button.b.t{background:var(--tonal);color:var(--accent)}',
-    '.ap button.b.d{background:transparent;color:var(--danger);border:1px solid var(--line)}',
+    '.ap button.b.t,body.dark .ap button.b.t{background:var(--tonal);color:var(--accent)}',
+    '.ap button.b.d,body.dark .ap button.b.d{background:transparent;color:var(--danger);border:1px solid var(--line)}',
     '.ap button.b:disabled{opacity:.45}',
     '.ap button.b.big{width:100%;min-height:48px;font-size:15px}',
     '.ap input,.ap select,.ap textarea{width:100%;box-sizing:border-box;font:15px var(--font);border:1px solid var(--line);border-radius:11px;background:var(--panel);' +
@@ -251,12 +308,15 @@
     '.ap-head{display:flex;align-items:center;gap:8px;padding:8px 12px 4px 16px;flex:0 0 auto;touch-action:none}',
     '.ap-tt{flex:1;min-width:0}.ap-sub{font-size:13px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:none}',
     '#apSheet.peek .ap-body{display:none}#apSheet.peek .ap-sub{display:block}#apSheet.peek .ap-head{padding-bottom:12px;cursor:pointer}',
+    '.ap-quick{display:none;gap:8px;padding:0 16px 12px}#apSheet.peek .ap-quick:not(:empty){display:flex}#apSheet.peek .ap-quick:not(:empty)~.ap-body{display:none}',
+    '.ap .ap-quick button.b{flex:1 1 0;min-width:0;min-height:38px;padding:8px 6px;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+    '#apSheet.peek .ap-head{padding-bottom:8px}',
     '.ap-title{font-weight:700;font-size:17px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
     '.ap-x{width:36px;height:36px;border:0;border-radius:50%;background:var(--bg);color:var(--muted);font-size:16px;cursor:pointer}',
     '.ap-body{overflow-y:auto;padding:0 16px 16px;overscroll-behavior:contain}',
-    '@media (min-width:900px){#apSheet{left:12px;right:auto;top:68px;bottom:12px;width:380px;max-height:none;border-radius:16px;box-shadow:var(--shadow)}' +
+    '@media (min-width:900px){#apSheet{left:12px;right:auto;top:68px;bottom:12px;width:var(--pw);max-height:none;border-radius:16px;box-shadow:var(--shadow)}' +
       '#apSheet.show{animation:none}.ap-grip{display:none}' +
-      'body.ap-sheet .leaflet-bottom.leaflet-left,body.ap-sheet #apCoords{left:400px}}',
+      'body.ap-sheet .leaflet-bottom.leaflet-left,body.ap-sheet #apCoords{left:calc(var(--pw) + 150px)}}',
     // диалог
     '#apDlg{position:fixed;inset:0;z-index:2100;background:rgba(0,0,0,.45);display:none;align-items:center;justify-content:center}',
     '#apDlg.show{display:flex}',
@@ -266,10 +326,6 @@
     // меню настроек
     '#apMenu{position:fixed;top:58px;right:8px;z-index:2000;min-width:260px;background:var(--panel);color:var(--text);border-radius:14px;box-shadow:0 8px 30px rgba(0,0,0,.22);padding:6px;display:none}',
     '#apMenu.show{display:block}',
-    '#apMenu .sw{margin-left:auto;width:38px;height:22px;border-radius:11px;background:var(--line);position:relative;flex:0 0 38px}',
-    '#apMenu .sw::after{content:"";position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:#fff;transition:left .15s;box-shadow:0 1px 2px rgba(0,0,0,.3)}',
-    '#apMenu .sw.on{background:var(--accent)}',
-    '#apMenu .sw.on::after{left:18px}',
     '#apMenu hr{border:0;border-top:1px solid var(--line);margin:4px 8px}',
     // всплывающее сообщение
     '#apToast{position:fixed;left:50%;bottom:calc(var(--sheet-h,0px) + 18px);transform:translateX(-50%);text-align:center;z-index:3000;background:#202124;color:#fff;border-radius:12px;padding:10px 16px;' +
@@ -301,7 +357,8 @@
       'padding:6px 10px!important;font:600 13px var(--font)!important;min-height:32px}',
     '#mapKinds button.on{background:var(--tonal)!important;color:var(--accent)!important}',
     '.leaflet-control-scale-line{border-color:var(--muted)!important;background:color-mix(in srgb,var(--panel) 80%,transparent)!important;color:var(--text)!important}',
-    '#apCoords{position:fixed;left:12px;bottom:8px;z-index:900;font:12px var(--font);color:var(--text);background:color-mix(in srgb,var(--panel) 88%,transparent);' +
+    'body.dark #apToast{background:#e8eaed;color:#15181c}',
+    '#apCoords{position:fixed;left:140px;bottom:8px;z-index:900;font:12px var(--font);color:var(--text);background:color-mix(in srgb,var(--panel) 88%,transparent);' +
       'border-radius:8px;padding:3px 8px;font-variant-numeric:tabular-nums;pointer-events:none}',
     // объекты на карте
     '.ap-shape{display:block;overflow:visible;filter:drop-shadow(0 1px 2px rgba(0,0,0,.55))}',
@@ -317,8 +374,19 @@
     '.ap-me{width:18px;height:18px;border-radius:50%;background:#1e88e5;border:3px solid #fff;box-sizing:border-box;box-shadow:0 0 0 3px rgba(30,136,229,.3),0 1px 4px rgba(0,0,0,.5)}',
     '.leaflet-container{font-family:var(--font)}',
     '.leaflet-tooltip{font:13px var(--font);border-radius:8px}'
-  ].join('\n');
+  ];
+  /* Правила объектов на карте не масштабируются (их размеры заданы и в коде), остальной интерфейс
+   * масштабируется настройкой «Размер кнопок и текста»: все px умножаются, кроме условий @media. */
+  var MAPRULE = /^(#apCross|\.ap-shape|\.ap-lbl|\.ap-z-lo|\.ap-llbl|\.ap-h\{|\.ap-mid|\.ap-me|\.leaflet-)/;
+  function cssText(k) {
+    var t = RULES.filter(function (r) { return !MAPRULE.test(r); }).join('\n');
+    return k === 1 ? t : t.replace(/@media \([^)]*\)|(\d*\.?\d+)px/g, function (m, n) { return n == null ? m : Math.round(n * k * 100) / 100 + 'px'; });
+  }
+  css.textContent = cssText(S.ui);
+  cssMap.textContent = RULES.filter(function (r) { return MAPRULE.test(r); }).join('\n');
+  document.documentElement.style.setProperty('--pw', Math.round(S.pcPanel * S.ui) + 'px');
   document.head.appendChild(css);
+  document.head.appendChild(cssMap);
   document.body.classList.add('ap');
 
   // ================================================================== значки (SVG)
@@ -348,6 +416,7 @@
     ins: ic('<circle cx="12" cy="12" r="8"/><path d="M12 8v8M8 12h8"/>'),
     undo: ic('<path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/>'),
     map: ic('<path d="M3 6l6-2 6 2 6-2v14l-6 2-6-2-6 2z"/><path d="M9 4v14M15 6v14"/>'),
+    gear: ic('<circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"/>'),
     cross: ic('<circle cx="12" cy="12" r="2" fill="currentColor"/><path d="M12 1v7M12 16v7M1 12h7M16 12h7"/>', 2.2)
   };
 
@@ -363,10 +432,10 @@
   bar.id = 'apBar';
   document.body.appendChild(bar);
 
-  var sheet = el('div', 'ap', '<div class="ap-grip"></div><div class="ap-head"><div class="ap-tt"><div class="ap-title"></div><div class="ap-sub"></div></div><button type="button" class="ap-x" title="Закрыть">&#10005;</button></div><div class="ap-body"></div>');
+  var sheet = el('div', 'ap', '<div class="ap-grip"></div><div class="ap-head"><div class="ap-tt"><div class="ap-title"></div><div class="ap-sub"></div></div><button type="button" class="ap-x" title="Закрыть">&#10005;</button></div><div class="ap-quick"></div><div class="ap-body"></div>');
   sheet.id = 'apSheet';
   document.body.appendChild(sheet);
-  var sheetTitle = sheet.querySelector('.ap-title'), sheetSub = sheet.querySelector('.ap-sub'), sheetBody = sheet.querySelector('.ap-body');
+  var sheetTitle = sheet.querySelector('.ap-title'), sheetSub = sheet.querySelector('.ap-sub'), sheetQuick = sheet.querySelector('.ap-quick'), sheetBody = sheet.querySelector('.ap-body');
 
   var dlg = el('div', 'ap', '<div id="apDlgBox"></div>');
   dlg.id = 'apDlg';
@@ -400,7 +469,7 @@
     if (typeof nodeLine !== 'undefined' && nodeLine) map.removeLayer(nodeLine);
   } catch (e) { /* не важно */ }
   if (map.zoomControl) map.removeControl(map.zoomControl);
-  L.control.scale({ position: 'bottomleft', imperial: false }).addTo(map);
+  var scaleCtl = L.control.scale({ position: 'bottomleft', imperial: false });
   setTimeout(function () { map.invalidateSize(); }, 30);
 
   // кнопки карты справа внизу
@@ -409,6 +478,7 @@
     onAdd: function () {
       var d = L.DomUtil.create('div', 'ap-ctl');
       d.innerHTML = '<div class="grp zoom"><button type="button" data-c="in" title="Приблизить">' + I.plus + '</button><button type="button" data-c="out" title="Отдалить">' + I.minus + '</button></div>' +
+        '<div class="grp undo"><button type="button" data-c="undo" title="Отменить последнее изменение">' + I.undo + '</button></div>' +
         '<div class="grp"><button type="button" data-c="fit" title="Показать всю сеть">' + I.fit + '</button><button type="button" data-c="loc" title="Где я">' + I.locate + '</button></div>' +
         '<button type="button" class="ap-fab" data-c="add" title="Добавить">' + I.plus + '</button>';
       L.DomEvent.disableClickPropagation(d);
@@ -418,7 +488,7 @@
         if (!b) return;
         var c = b.getAttribute('data-c');
         if (c === 'in') map.zoomIn(); else if (c === 'out') map.zoomOut();
-        else if (c === 'fit') fitAll(); else if (c === 'loc') locate(); else if (c === 'add') showAdd();
+        else if (c === 'undo') undo(); else if (c === 'fit') fitAll(); else if (c === 'loc') locate(); else if (c === 'add') showAdd();
       });
       return d;
     }
@@ -444,6 +514,14 @@
     if (o.type === 'fiber') { if (L2.air) t.push('опоры ' + len(L2.air)); if (L2.ground) t.push('земля ' + len(L2.ground)); }
     return t.join(' · ');
   }
+  /* в свёрнутой карточке в режиме правки — главные действия одной строкой */
+  function quick(v) {
+    var o = v && v.k === 'card' && mode === 'edit' ? get(v.id) : null, acts = [];
+    if (o && o.type === 'node') acts = [['+ ВОЛС', function () { startLine('fiber', o.id); }], ['+ Радио', function () { startLine('radio', o.id); }], ['Изменить', function () { editNode(o.id); }]];
+    else if (o) acts = (o.type === 'fiber' ? [['Продолжить', function () { startLine('fiber', null, o.id); }]] : []).concat([['Название', function () { editLine(o.id); }], ['Подробнее', function () { setPeek(false); }]]);
+    sheetQuick.innerHTML = acts.map(function (a, i) { return '<button type="button" class="b t" data-q="' + i + '">' + a[0] + '</button>'; }).join('');
+    sheetQuick.querySelectorAll('[data-q]').forEach(function (b) { b.onclick = function () { acts[+b.getAttribute('data-q')][1](); }; });
+  }
   function setPeek(on) {
     peek = !!on && !wide() && !!view && !!PEEKABLE[view.k];
     sheet.classList.toggle('peek', peek);
@@ -456,6 +534,7 @@
     view = v;
     sheetTitle.textContent = title;
     sheetSub.textContent = subOf(v);
+    quick(v);
     sheet.classList.add('show');
     setPeek(peek);
     return sheetBody;
@@ -508,8 +587,8 @@
 
   // ================================================================== диалоги
 
-  function openDlg(html) { dlgBox.removeAttribute('data-offline'); dlgBox.innerHTML = html; dlg.classList.add('show'); return dlgBox; }
-  function closeDlg() { dlg.classList.remove('show'); dlgBox.innerHTML = ''; dlgBox.removeAttribute('data-offline'); }
+  function openDlg(html) { dlgBox.removeAttribute('data-offline'); dlgBox.removeAttribute('data-set'); dlgBox.innerHTML = html; dlg.classList.add('show'); return dlgBox; }
+  function closeDlg() { dlg.classList.remove('show'); dlgBox.innerHTML = ''; dlgBox.removeAttribute('data-offline'); dlgBox.removeAttribute('data-set'); }
   dlg.addEventListener('click', function (e) { if (e.target === dlg) closeDlg(); });
   /* fields: [{key, label, type: text|select|textarea, value, options, required, placeholder}] */
   function form(title, fields, okLabel, onOk) {
@@ -547,7 +626,7 @@
 
   // ================================================================== режимы
 
-  var mode = 'view';   // при запуске — всегда просмотр: ничего не сдвинуть случайно
+  var mode = 'view';   // при запуске — просмотр (ничего не сдвинуть случайно), если в настройках не выбрано иное
   function setMode(m) {
     if (tool) finishTool();
     mode = m;
@@ -555,7 +634,9 @@
     bar.querySelectorAll('[data-mode]').forEach(function (b) { b.classList.toggle('on', b.getAttribute('data-mode') === m); });
     select(null);
     if (view && view.k !== 'search') closeSheet();
-    toast(m === 'edit' ? 'Редактирование: «+» — добавить, нажмите на объект — изменить, долгое нажатие — меню' : 'Просмотр: ничего не сдвинется. Нажмите на узел или линию — сведения');
+    try { localStorage.setItem('karta_mode', m); } catch (e) { /* не важно */ }
+    updHint();
+    toast(m === 'edit' ? 'Редактирование: «+» — добавить, долгое нажатие — меню' : 'Просмотр: ничего не сдвинется');
   }
   bar.querySelectorAll('[data-mode]').forEach(function (b) { b.onclick = function () { if (mode !== b.getAttribute('data-mode')) setMode(b.getAttribute('data-mode')); }; });
 
@@ -568,14 +649,14 @@
 
   function zoomCls() {
     var c = map.getContainer(), z = map.getZoom();
-    c.classList.toggle('ap-z-lo', z < 12);
-    c.classList.toggle('ap-z-lo2', z < 13);
+    c.classList.toggle('ap-z-lo', S.nodeLbl === 'never' || (S.nodeLbl === 'zoom' && z < 12));
+    c.classList.toggle('ap-z-lo2', S.lineLbl === 'never' || (S.lineLbl === 'zoom' && z < 13));
   }
   map.on('zoomend', function () { zoomCls(); refresh(); });
   zoomCls();
 
   function nodeIcon(o, ring) {
-    var color = STATES[o.f.state] || '#455a64', big = o.f.kind === 'опорный узел' || o.f.kind === 'базовая станция', px = big ? 28 : 24;
+    var color = STATES[o.f.state] || '#455a64', big = o.f.kind === 'опорный узел' || o.f.kind === 'базовая станция', px = Math.round((big ? 28 : 24) * S.nodeSize);
     return L.divIcon({ className: '', html: shapeSvg(o.f.kind, color, px, ring) + '<div class="ap-lbl">' + esc(o.f.name) + '</div>',
       iconSize: [px, px], iconAnchor: [px / 2, px / 2] });
   }
@@ -590,6 +671,7 @@
     objs.filter(function (o) { return o.type !== 'node'; }).forEach(function (o) { drawLine(o, z); });
     objs.filter(function (o) { return o.type === 'node' && isFinite(o.f.lat) && isFinite(o.f.lng); }).forEach(drawNode);
     drawTool();
+    updHint();
     if (view && (view.k === 'card' || view.k === 'pt' || view.k === 'line' || view.k === 'nodemenu' || view.k === 'tool')) renderView();
   }
 
@@ -616,8 +698,8 @@
     var ll = pts.map(function (p) { return [p.lat, p.lng]; });
     if (isSel) L.polyline(ll, { color: '#1a73e8', weight: 16, opacity: .25, interactive: false }).addTo(layer);
     if (o.type === 'radio') {
-      L.polyline(ll, { color: '#fff', weight: isSel ? 9 : 7, opacity: .8, interactive: false }).addTo(layer);
-      L.polyline(ll, { color: '#1565c0', weight: isSel ? 5 : 3.5, dashArray: '9 7', bubblingMouseEvents: true }).addTo(layer);
+      L.polyline(ll, { color: '#fff', weight: (isSel ? 9 : 7) * S.lineW, opacity: .8, interactive: false }).addTo(layer);
+      L.polyline(ll, { color: '#1565c0', weight: (isSel ? 5 : 3.5) * S.lineW, dashArray: '9 7', bubblingMouseEvents: true }).addTo(layer);
     } else {
       var lay = layOf(o), runs = [], cur = null;
       for (var i = 0; i < lay.length; i++) {
@@ -625,11 +707,11 @@
         cur.ll.push(ll[i + 1]);
       }
       runs.forEach(function (r) {
-        L.polyline(r.ll, { color: '#fff', weight: isSel ? 10 : 8, opacity: .85, interactive: false }).addTo(layer);
+        L.polyline(r.ll, { color: '#fff', weight: (isSel ? 10 : 8) * S.lineW, opacity: .85, interactive: false }).addTo(layer);
       });
       runs.forEach(function (r) {
         var s = LAY[r.lay] || LAY.air;
-        L.polyline(r.ll, { color: s.color, weight: isSel ? 6 : 4.5, dashArray: s.dash, lineCap: s.dash ? 'butt' : 'round', bubblingMouseEvents: true }).addTo(layer);
+        L.polyline(r.ll, { color: s.color, weight: (isSel ? 6 : 4.5) * S.lineW, dashArray: s.dash, lineCap: s.dash ? 'butt' : 'round', bubblingMouseEvents: true }).addTo(layer);
       });
     }
     if (pc && mode === 'view') {
@@ -657,7 +739,7 @@
         });
         h.addTo(layer);
       });
-      for (var j = 0; j + 1 < pts.length; j++) (function (j) {
+      for (var j = 0; o.type === 'fiber' && j + 1 < pts.length; j++) (function (j) {
         var a = pts[j], b = pts[j + 1];
         var m = L.marker([(a.lat + b.lat) / 2, (a.lng + b.lng) / 2], {
           icon: L.divIcon({ className: '', html: '<div class="ap-mid">+</div>', iconSize: [20, 20], iconAnchor: [10, 10] }),
@@ -667,7 +749,7 @@
         m.on('dragend', function () { lastDrag = Date.now(); insertPoint(o.id, j, m.getLatLng()); });
         m.addTo(layer);
       })(j);
-    } else if (o.type === 'fiber' && z >= 15) {
+    } else if (o.type === 'fiber' && z >= (S.linePts === 'always' ? 13 : S.linePts === 'never' ? 99 : 15)) {
       pts.forEach(function (p) {
         if (p.nid) return;
         L.circleMarker([p.lat, p.lng], { radius: p.kind === 'опора' ? 3.5 : 5, color: '#fff', weight: 1.5, fillColor: PT_COLOR[p.kind] || '#78909c', fillOpacity: 1, interactive: false }).addTo(layer);
@@ -743,7 +825,7 @@
     if (tool) return;
     var h = hitTest(p);
     if (!h) return;
-    if (navigator.vibrate) try { navigator.vibrate(25); } catch (e) { /* нет */ }
+    if (S.vibro && navigator.vibrate) try { navigator.vibrate(25); } catch (e) { /* нет */ }
     if (mode !== 'edit') { sel = { type: h.type === 'node' ? 'node' : 'line', id: h.id }; refresh(); showCard(h.id); return; }
     if (h.type === 'node') { sel = { type: 'node', id: h.id }; refresh(); showNodeMenu(h.id); }
     else if (h.type === 'pt') showPoint(h.id, h.i);
@@ -761,7 +843,7 @@
       if (e.touches.length !== 1) { start = null; return; }
       var r = mc.getBoundingClientRect(), x = e.touches[0].clientX - r.left, y = e.touches[0].clientY - r.top;
       start = { x: x, y: y };
-      t = setTimeout(function () { if (start) longPress(L.point(start.x, start.y)); start = null; }, 550);
+      t = setTimeout(function () { if (start) longPress(L.point(start.x, start.y)); start = null; }, S.longMs);
     }, { passive: true });
     mc.addEventListener('touchmove', function (e) {
       if (!start) return;
@@ -830,13 +912,13 @@
         kvRow('Примечание', esc(f.note || '')) + kvRow('Изменено', esc(o.by || '') + ', ' + when(o.t)) + '</table>';
       if (o.type === 'fiber') html += '<div class="muted" style="display:flex;gap:16px;margin-top:8px;align-items:center"><span><span class="lg" style="border-color:' + LAY.air.color + '"></span> по опорам</span>' +
         '<span><span class="lg" style="border-top-style:dashed;border-color:' + LAY.ground.color + '"></span> в земле</span></div>';
-      if (mode === 'edit') html += btnRow([['cont', 'Продолжить линию'], ['name', 'Название…', 't'], ['del', 'Удалить', 'd']]) +
-        '<p class="muted">Тяните точки, «+» между точками — новая точка. Нажатие на точку или долгое нажатие на линию — меню.</p>';
+      if (mode === 'edit') html += btnRow((o.type === 'fiber' ? [['cont', 'Продолжить линию']] : []).concat([['name', 'Название…', 't'], ['del', 'Удалить', 'd']])) +
+        '<p class="muted">' + (o.type === 'fiber' ? 'Тяните точки, «+» между точками — новая точка. Нажатие на точку или долгое нажатие на линию — меню.' : 'Концы радиолинии можно перетащить.') + '</p>';
       html += '<div class="sec">Все точки</div>' + pts.map(function (p, i) {
         var nm = p.nid ? nodeName(p.nid) : (p.name || '');
         var segTxt = i < pts.length - 1 && o.type === 'fiber' ? ' <span class="muted">→ ' + (LAY[layOf(o)[i]] || LAY.air).name + '</span>' : '';
         return '<div class="item" data-pt="' + i + '"><div class="ap-h" style="background:' + (PT_COLOR[p.nid ? 'узел' : p.kind] || '#78909c') + ';flex:0 0 22px">' + (i + 1) + '</div>' +
-          '<div class="tx"><div><b>' + esc(p.nid ? 'узел' : (o.type === 'radio' ? (i ? 'B' : 'A') : p.kind || 'точка')) + '</b> ' + esc(nm) + segTxt + '</div><div class="muted">' + sk(p.lat, p.lng) + '</div></div></div>';
+          '<div class="tx"><div><b>' + esc(p.nid ? 'узел' : (o.type === 'radio' ? (i ? 'B' : 'A') : p.kind || 'точка')) + '</b> ' + esc(nm) + segTxt + '</div><div class="muted">' + coord(p.lat, p.lng) + '</div></div></div>';
       }).join('');
       body = openSheet(f.name || TYPE_NAME[o.type], view);
       body.innerHTML = html;
@@ -980,7 +1062,7 @@
     if (o.type === 'fiber' && i > 0) html += layRow('← от ' + i, lay[i - 1], 'segp');
     if (o.type === 'fiber' && i < pts.length - 1) html += layRow('→ до ' + (i + 2), lay[i], 'seg');
     html += '<div class="row tool"><button type="button" class="b d" data-a="del">Удалить</button>' +
-      '<span class="muted" style="flex:1;align-self:center;text-align:right">' + sk(p.lat, p.lng) + '</span></div>';
+      '<span class="muted" style="flex:1;align-self:center;text-align:right">' + coord(p.lat, p.lng) + '</span></div>';
     body.innerHTML = html;
     body.querySelectorAll('[data-k]').forEach(function (b) {
       b.onclick = function () { var d = lineFields(o); d.pts[i].kind = b.getAttribute('data-k'); saveLine(o, d.pts, d.lay, 'точка изменена'); };
@@ -1009,7 +1091,7 @@
     var o = get(id);
     if (!o) { closeSheet(); return; }
     var body = openSheet(o.f.name || TYPE_NAME[o.type], view), lay = layOf(o), html = '';
-    html += '<button type="button" class="mi" data-a="ins">' + I.ins + 'Вставить точку здесь</button>';
+    if (o.type === 'fiber') html += '<button type="button" class="mi" data-a="ins">' + I.ins + 'Вставить точку здесь</button>';
     if (o.type === 'fiber') html += '<div class="sec">Этот участок (' + (seg + 1) + '–' + (seg + 2) + ')</div>' + layChips(lay[seg], 'seg');
     html += '<button type="button" class="mi" data-a="cont">' + I.cont + 'Продолжить линию</button>' +
       '<button type="button" class="mi" data-a="name">' + I.edit + 'Название и примечание</button>' +
@@ -1085,6 +1167,7 @@
   function startTool(t) {
     if (tool) finishTool();
     tool = t;
+    map.doubleClickZoom.disable();
     document.body.classList.add('ap-tool');
     sel = t.id ? { type: 'line', id: t.id } : null;
     view = { k: 'tool' };
@@ -1118,6 +1201,7 @@
     var t = tool;
     if (!t) return;
     tool = null;
+    map.doubleClickZoom.enable();
     document.body.classList.remove('ap-tool');
     cross.classList.remove('show');
     toolLayer.clearLayers();
@@ -1132,7 +1216,12 @@
     refresh();
   }
 
+  var lastTap = 0, lastTapPt = null;
   function toolTap(ll, h) {
+    if (!S.tap) { toast('Двигайте карту и нажмите кнопку — нажатия по карте выключены в настройках'); return; }
+    var tp = map.latLngToContainerPoint(ll);
+    if (Date.now() - lastTap < 350 && lastTapPt && tp.distanceTo(lastTapPt) < 30) return;      // двойное касание — одна точка
+    lastTap = Date.now(); lastTapPt = tp;
     if (tool.kind === 'node') { var t = ll; finishTool(); newNode(t); return; }
     if (tool.kind === 'line') {
       if (h && h.type === 'node') addPoint(L.latLng(get(h.id).f.lat, get(h.id).f.lng), get(h.id));
@@ -1336,9 +1425,10 @@
       '<button type="button" class="mi" data-m="file">' + I.file + 'Обмен данными (файл)</button>' +
       '<button type="button" class="mi" data-m="journal">' + I.list + 'Журнал изменений</button>' +
       '<button type="button" class="mi" data-m="offline">' + I.map + 'Карта без интернета</button>' +
+      '<button type="button" class="mi" data-m="legend">' + I.node + 'Обозначения</button>' +
       '<hr><button type="button" class="mi" data-m="online">' + I.web + 'Карта из интернета' + sw(online) + '</button>' +
       '<button type="button" class="mi" data-m="theme">' + I.moon + 'Тёмная тема' + sw(dark) + '</button>' +
-      '<button type="button" class="mi" data-m="who">' + I.user + 'Подпись: ' + esc(who || 'не задана') + '</button>';
+      '<hr><button type="button" class="mi" data-m="set">' + I.gear + 'Настройки</button>';
   }
   function closeMenu() { menu.classList.remove('show'); }
   $('apMenuBtn').onclick = function (e) {
@@ -1355,13 +1445,20 @@
     else if (m === 'journal') { closeMenu(); showJournal(); }
     else if (m === 'offline') { closeMenu(); showOffline(); }
     else if (m === 'online') { $('online').click(); renderMenu(); toast($('online').checked ? 'Карта загружается из интернета' : 'Без интернета: только сохранённое'); }
-    else if (m === 'theme') { $('btnTheme').click(); renderMenu(); }
+    else if (m === 'theme') { setS('theme', document.body.classList.contains('dark') ? 'light' : 'dark'); renderMenu(); }
+    else if (m === 'legend') { closeMenu(); showLegend(); }
+    else if (m === 'set') { closeMenu(); showSettings(); }
     else if (m === 'who') {
       closeMenu();
-      form('Подпись изменений', [{ key: 'who', label: 'Как подписывать ваши изменения (бригада, фамилия)', value: localStorage.getItem(WHO) || '', required: true }], 'Сохранить',
-        function (v) { localStorage.setItem(WHO, v.who); toast('Подпись: ' + v.who); });
+      askWho();
     }
   });
+  function askWho(then) {
+    {
+      form('Подпись изменений', [{ key: 'who', label: 'Как подписывать ваши изменения (бригада, фамилия)', value: localStorage.getItem(WHO) || '', required: true }], 'Сохранить',
+        function (v) { localStorage.setItem(WHO, v.who); toast('Подпись: ' + v.who); if (then) then(); });
+    }
+  }
 
   function showJournal() {
     var list = db.journal.slice(0, 300);
@@ -1584,6 +1681,126 @@
   window.KartaApp = { setMode: setMode, refresh: refresh, fitAll: fitAll, startLine: startLine, startNode: startNode, finishTool: finishTool,
     addCross: function () { if ($('apAddPt')) $('apAddPt').click(); }, state: function () { return { mode: mode, tool: tool, sel: sel, view: view }; } };
 
+  // ================================================================== настройки (окно)
+
+  var SETTINGS = [
+    { sec: 'Вид' },
+    { k: 'theme', t: 'Тема', o: [['light', 'Светлая'], ['dark', 'Тёмная'], ['auto', 'Как в системе']] },
+    { k: 'ui', t: 'Размер кнопок и текста', o: [[0.9, 'Мелкий'], [1, 'Обычный'], [1.15, 'Крупный'], [1.3, 'Очень крупный']] },
+    { k: 'mapDim', t: 'Приглушать карту в тёмной теме' },
+    { sec: 'Карта' },
+    { k: 'nodeLbl', t: 'Подписи узлов', o: [['always', 'Всегда'], ['zoom', 'Вблизи'], ['never', 'Нет']] },
+    { k: 'lineLbl', t: 'Подписи линий', o: [['always', 'Всегда'], ['zoom', 'Вблизи'], ['never', 'Нет']] },
+    { k: 'nodeSize', t: 'Значки узлов', o: [[0.8, 'Мелкие'], [1, 'Обычные'], [1.3, 'Крупные']] },
+    { k: 'lineW', t: 'Толщина линий', o: [[0.75, 'Тонкие'], [1, 'Обычные'], [1.4, 'Толстые']] },
+    { k: 'linePts', t: 'Опоры и колодцы на карте', o: [['always', 'Всегда'], ['near', 'Вблизи'], ['never', 'Нет']] },
+    { k: 'scale', t: 'Масштабная линейка' },
+    { k: 'zoomBtns', t: 'Кнопки масштаба «+ −»', phone: true },
+    { k: '_online', t: 'Карта из интернета', h: 'выключите — только офлайн-карта и то, что уже открывали' },
+    { sec: 'Работа' },
+    { k: 'start', t: 'При запуске открывать', o: [['view', 'Просмотр'], ['edit', 'Правку'], ['last', 'Как в прошлый раз']] },
+    { k: 'tap', t: 'Ставить точки нажатием на карту', h: 'выключите, чтобы точки ставились только в перекрестие' },
+    { k: 'longMs', t: 'Долгое нажатие', o: [[400, 'Быстрое'], [550, 'Обычное'], [800, 'Медленное']] },
+    { k: 'vibro', t: 'Вибрация при долгом нажатии', phone: true },
+    { k: 'coords', t: 'Координаты точек', o: [['sk42', 'СК-42'], ['wgs', 'Градусы'], ['both', 'Оба']] },
+    { sec: 'Компьютер', pc: true },
+    { k: 'pcPanel', t: 'Ширина панели слева', o: [[320, 'Узкая'], [380, 'Обычная'], [460, 'Широкая']], pc: true },
+    { k: 'pcCoords', t: 'Координаты под курсором', pc: true }
+  ];
+  var sysDark = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+  function applySettings() {
+    var b = document.body, dark = S.theme === 'dark' || (S.theme === 'auto' && !!sysDark && sysDark.matches), was = b.classList.contains('dark');
+    b.classList.toggle('dark', dark);
+    try { localStorage.setItem('wf_theme', dark ? 'dark' : 'light'); } catch (e) { /* не важно */ }
+    if (was !== dark && window.KartaMap && window.KartaMap.retheme) window.KartaMap.retheme();
+    b.classList.toggle('ap-dim', !!S.mapDim);
+    b.classList.toggle('ap-nozoom', !S.zoomBtns);
+    b.classList.toggle('ap-nocoords', !S.pcCoords);
+    var t = cssText(S.ui);
+    if (css.textContent !== t) css.textContent = t;
+    document.documentElement.style.setProperty('--pw', Math.round(S.pcPanel * S.ui) + 'px');
+    if (S.scale) scaleCtl.addTo(map); else scaleCtl.remove();
+    zoomCls();
+    refresh();
+    sizeChanged();
+    setTimeout(function () { map.invalidateSize(); sizeChanged(); }, 60);
+  }
+  function setS(k, v) {
+    S[k] = v;
+    try { localStorage.setItem(SET, JSON.stringify(S)); } catch (e) { /* не важно */ }
+    applySettings();
+  }
+  if (sysDark) { var onSys = function () { if (S.theme === 'auto') applySettings(); }; if (sysDark.addEventListener) sysDark.addEventListener('change', onSys); else if (sysDark.addListener) sysDark.addListener(onSys); }
+  function showSettings() {
+    var top = dlgBox.getAttribute('data-set') ? dlgBox.scrollTop : 0, html = '<h3>Настройки</h3>';
+    SETTINGS.forEach(function (r) {
+      if ((r.pc && !pc) || (r.phone && pc)) return;
+      if (r.sec) { html += '<div class="sec">' + r.sec + '</div>'; return; }
+      var val = r.k === '_online' ? !!($('online') && $('online').checked) : S[r.k];
+      html += '<div class="srow"><span>' + esc(r.t) + (r.h ? '<small>' + esc(r.h) + '</small>' : '') + '</span>' +
+        (r.o ? '<div class="chips">' + r.o.map(function (o, i) {
+          return '<button type="button" class="chip' + (o[0] === val ? ' on' : '') + '" data-sk="' + r.k + '" data-si="' + i + '">' + o[1] + '</button>';
+        }).join('') + '</div>' : '<button type="button" class="sw' + (val ? ' on' : '') + '" data-sk="' + r.k + '" aria-label="' + esc(r.t) + '"></button>') + '</div>';
+    });
+    html += '<div class="sec">Прочее</div><div class="srow"><span>Подпись изменений<small>' + esc(localStorage.getItem(WHO) || 'не задана') + '</small></span>' +
+      '<button type="button" class="b t" data-a="who">Изменить</button></div>' +
+      '<div class="row"><button type="button" class="b d" data-a="reset">Сбросить настройки</button><button type="button" class="b" id="apNo">Готово</button></div>' +
+      '<p class="muted">Карта сети ' + (window.KartaVersion || '3.1') + '. Настройки хранятся на этом устройстве и в файл обмена не попадают.</p>';
+    openDlg(html);
+    dlgBox.setAttribute('data-set', '1');
+    dlgBox.scrollTop = top;
+    $('apNo').onclick = closeDlg;
+    dlgBox.querySelectorAll('[data-sk]').forEach(function (b) {
+      b.onclick = function () {
+        var k = b.getAttribute('data-sk'), r = SETTINGS.filter(function (x) { return x.k === k; })[0];
+        if (k === '_online') $('online').click();
+        else setS(k, r.o ? r.o[+b.getAttribute('data-si')][0] : !S[k]);
+        showSettings();
+      };
+    });
+    bind(dlgBox, {
+      who: function () { askWho(showSettings); },
+      reset: function () { Object.keys(DEF).forEach(function (k) { S[k] = DEF[k]; }); S.theme = 'light'; setS('ui', 1); showSettings(); toast('Настройки сброшены'); }
+    });
+  }
+
+  // ================================================================== обозначения
+
+  function showLegend() {
+    openDlg('<h3>Обозначения</h3><div class="sec">Узлы — форма по виду</div><div class="lgd">' + NODE_KINDS.map(function (k) {
+      return '<div>' + shapeSvg(k, '#455a64', 22) + esc(k) + '</div>';
+    }).join('') + '</div><div class="sec">Цвет — состояние</div><div class="lgd">' + Object.keys(STATES).map(function (k) {
+      return '<div><i style="width:14px;height:14px;border-radius:50%;background:' + STATES[k] + '"></i>' + esc(k) + '</div>';
+    }).join('') + '</div><div class="sec">Линии</div><div class="lgd">' +
+      '<div><span class="lg" style="border-color:' + LAY.air.color + '"></span>ВОЛС по опорам</div>' +
+      '<div><span class="lg" style="border-top-style:dashed;border-color:' + LAY.ground.color + '"></span>ВОЛС в земле</div>' +
+      '<div><span class="lg" style="border-top-style:dashed;border-color:#1565c0"></span>радиолиния</div></div>' +
+      '<div class="sec">Точки линии</div><div class="lgd">' + PT_KINDS.map(function (k) {
+        return '<div><i style="width:12px;height:12px;border-radius:50%;background:' + PT_COLOR[k] + '"></i>' + esc(k) + '</div>';
+      }).join('') + '</div><div class="row"><button type="button" class="b t" id="apNo">Закрыть</button></div>');
+    $('apNo').onclick = closeDlg;
+  }
+
+  // ================================================================== подсказка на пустой карте, кнопка «назад»
+
+  var hint = el('div');
+  hint.id = 'apHint';
+  document.body.appendChild(hint);
+  function updHint() {
+    var show = !alive().length && !tool && !view;
+    hint.style.display = show ? 'block' : 'none';
+    if (show) hint.innerHTML = mode === 'edit' ? '<b>Сеть пока пуста</b>Нажмите «+» справа внизу: узел, линия ВОЛС или радиолиния.'
+      : '<b>Сеть пока пуста</b>Включите «' + (window.innerWidth <= 420 ? 'Правка' : 'Редактирование') + '» вверху и нажмите «+» — или загрузите карту из файла: «⋮» → «Обмен данными».';
+  }
+  /* кнопка «назад» на телефоне: закрыть то, что открыто; false — закрывать нечего */
+  window.__kartaBack = function () {
+    if (dlg.classList.contains('show')) { closeDlg(); return true; }
+    if (menu.classList.contains('show')) { closeMenu(); return true; }
+    if (tool) { finishTool(); return true; }
+    if (view || sel) { select(null); if (view) closeSheet(); return true; }
+    return false;
+  };
+
   // ================================================================== компьютер: координаты, Esc
 
   if (pc) {
@@ -1593,6 +1810,7 @@
     map.on('mousemove', function (e) { co.textContent = e.latlng.lat.toFixed(5) + ', ' + e.latlng.lng.toFixed(5) + '  ·  СК-42 ' + sk(e.latlng.lat, e.latlng.lng) + '  ·  масштаб ' + map.getZoom(); });
   }
   document.addEventListener('keydown', function (e) {
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'я') && !/INPUT|TEXTAREA/.test((e.target || {}).tagName || '')) { undo(); return; }
     if (e.key !== 'Escape') return;
     if (dlg.classList.contains('show')) closeDlg();
     else if (menu.classList.contains('show')) closeMenu();
@@ -1602,8 +1820,24 @@
 
   // ================================================================== запуск
 
-  setMode('view');
+  applySettings();
+  setMode(S.start === 'edit' || (S.start === 'last' && localStorage.getItem('karta_mode') === 'edit') ? 'edit' : 'view');
   toastEl.classList.remove('show');
+  // карта открывается там, где её оставили; в первый раз — вся сеть
+  (function () {
+    var v = null;
+    try { v = JSON.parse(localStorage.getItem('karta_view')); } catch (e) { v = null; }
+    if (v && isFinite(v[0]) && isFinite(v[1]) && isFinite(v[2])) map.setView([v[0], v[1]], v[2], { animate: false });
+    else if (alive().length) setTimeout(fitAll, 80);
+    var t = 0;
+    map.on('moveend', function () {
+      clearTimeout(t);
+      t = setTimeout(function () {
+        var c = map.getCenter();
+        try { localStorage.setItem('karta_view', JSON.stringify([+c.lat.toFixed(5), +c.lng.toFixed(5), map.getZoom()])); } catch (e) { /* не важно */ }
+      }, 1200);
+    });
+  })();
   refresh();
   if (android && android.ready) android.ready();
 })();
