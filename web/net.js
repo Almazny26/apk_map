@@ -87,6 +87,10 @@
   function get(id) { var o = id && db.objs[id]; return o && !o.f.deleted ? o : null; }
 
   function log(o, what) {
+    var j = db.journal[0], now = Date.now();
+    if (j && j.id === o.id && j.what === what && j.by === author() && now - j.t < 10 * 60000) {
+      j.t = now; j.name = o.f.name || ''; return;   // правки одной трассы подряд — одна запись
+    }
     db.journal.unshift({ t: Date.now(), by: author(), id: o.id, type: o.type, name: o.f.name || '', what: what });
     if (db.journal.length > JOURNAL_MAX) db.journal.length = JOURNAL_MAX;
   }
@@ -185,6 +189,13 @@
       'border-radius:8px;background:rgba(255,255,255,.88);color:#bf360c;border:1px solid #bf360c;pointer-events:none}',
     '.nm-llbl.radio{color:#1565c0;border-color:#1565c0}',
     '.nm-nolinelabels .nm-llbl{display:none}',
+    '#nmBar{display:none;position:fixed;left:50%;transform:translateX(-50%);bottom:calc(var(--sheet-h,26px) + 14px);z-index:99999;' +
+      'width:min(560px,calc(100vw - 20px));box-sizing:border-box;align-items:center;gap:8px;padding:8px 8px 8px 14px;border-radius:12px;background:var(--panel);color:var(--text);' +
+      'box-shadow:0 6px 24px rgba(0,0,0,.3);font-size:13px;line-height:1.3}',
+    '#nmBar.active{display:flex}',
+    '#nmBar span{flex:1;min-width:0}',
+    '#nmBar small{display:block;color:var(--muted);font-size:12px;margin-top:2px}',
+    '#nmBar button{flex:0 0 auto;padding:8px 12px;font-size:14px}',
     '.nm-fit a{font:700 18px/30px sans-serif!important;text-align:center;cursor:pointer}',
     '.nm-mid{width:14px;height:14px;border-radius:50%;background:#fff;border:2px solid #ef6c00;box-sizing:border-box;' +
       'color:#ef6c00;font:700 11px/10px sans-serif;text-align:center;opacity:.85;box-shadow:0 1px 3px rgba(0,0,0,.4)}',
@@ -363,17 +374,20 @@
       drawn[o.id] = g;
     });
     objs.filter(function (o) { return o.type === 'node' && isFinite(o.f.lat) && isFinite(o.f.lng); }).forEach(function (o) {
-      var m = L.marker([o.f.lat, o.f.lng], { icon: nodeIcon(o), draggable: netOn, zIndexOffset: 500 });
-      m.bindPopup(function () { return card(o.id); });
+      var m = L.marker([o.f.lat, o.f.lng], { icon: nodeIcon(o), draggable: netOn && !drawing(), zIndexOffset: 500 });
+      if (drawing()) m.on('click', function () { nodeTap(o.id); });
+      else m.bindPopup(function () { return card(o.id); });
       m.on('dragend', function () {
         var ll = m.getLatLng();
         put(o.id, 'node', { lat: +ll.lat.toFixed(6), lng: +ll.lng.toFixed(6) }, 'перемещён');
-        say('Узел «' + (o.f.name || '') + '» перемещён');
+        var n = follow(o.id);
+        say('Узел «' + (o.f.name || '') + '» перемещён' + (n ? ', линий за ним: ' + n : ''));
       });
       m.addTo(layer);
       drawn[o.id] = m;
     });
     drawGhost();
+    if ($('netSaveFiber')) curLabels();
     renderList();
   }
 
@@ -418,9 +432,18 @@
       row.appendChild(b);
     }
     if (o.type === 'node') {
-      btn('Изменить', '', function () { editNode(o.id); });
-      btn('Точка A', 'secondary', function () { radioPoint(L.latLng(f.lat, f.lng), 'A'); });
-      btn('Точка B', 'secondary', function () { radioPoint(L.latLng(f.lat, f.lng), 'B'); });
+      var linked = linesAt(o.id);
+      if (linked.length) {
+        var ul = document.createElement('div');
+        ul.className = 'nm-sub';
+        ul.innerHTML = 'Линии: ' + linked.map(function (l) { return '<a data-l="' + esc(l.id) + '" style="color:#1565c0;cursor:pointer">' + esc(l.f.name || TYPE_NAME[l.type]) + '</a>'; }).join(', ');
+        ul.querySelectorAll('[data-l]').forEach(function (a) { a.onclick = function () { map.closePopup(); focus(a.getAttribute('data-l')); }; });
+        el.insertBefore(ul, row);
+      }
+      btn('ВОЛС до узла', '', function () { startPick('fiber', o.id); });
+      btn('ВОЛС по точкам', 'secondary', function () { startRoute(o.id); });
+      btn('Радиолиния до узла', 'secondary', function () { startPick('radio', o.id); });
+      btn('Изменить', 'secondary', function () { editNode(o.id); });
     } else {
       btn('Открыть', '', function () { openLine(o.id); });
       btn('Изменить', 'secondary', function () { editLine(o.id); });
@@ -507,6 +530,9 @@
 
   function saveFiber() {
     if (nodes.length < 2) { say('Сначала поставьте хотя бы две точки линии'); return; }
+    autosaveFiber();
+    var cur0 = curGet();
+    if (get(cur0.fiber)) { editLine(cur0.fiber); return; }   // линия ВОЛС сохраняется сама, здесь — название и примечание
     var cur = curGet(), o = get(cur.fiber), f = o ? o.f : {};
     var n = alive().filter(function (x) { return x.type === 'fiber'; }).length + 1;
     form(o ? 'Сохранить линию ВОЛС' : 'Линия ВОЛС в сеть', [
@@ -529,7 +555,12 @@
     form(o.type === 'radio' ? 'Радиолиния' : 'Линия ВОЛС', [
       { key: 'name', label: 'Название', value: o.f.name, required: true },
       { key: 'note', label: 'Примечание', type: 'textarea', value: o.f.note }
-    ].concat(whoField()), 'Сохранить', function (v) { takeWho(v); put(id, o.type, { name: v.name, note: v.note }); });
+    ].concat(whoField()), 'Сохранить', function (v) {
+      takeWho(v);
+      var fields = { name: v.name, note: v.note };
+      if (v.name !== o.f.name) fields.autoName = false;   // своё название больше не меняется по узлам
+      put(id, o.type, fields);
+    });
   }
 
   function fitTo(list) {
@@ -543,7 +574,7 @@
     netTab(false);
     var cur = curGet();
     if (o.type === 'radio') {
-      points = (o.f.points || []).map(function (p) { return { lat: p.lat, lng: p.lng, height: isFinite(+p.height) ? +p.height : 15 }; });
+      points = (o.f.points || []).map(function (p) { var q = { lat: p.lat, lng: p.lng, height: isFinite(+p.height) ? +p.height : 15 }; if (p.nid) q.nid = p.nid; return q; });
       if (o.f.freq) $('freq').value = o.f.freq;
       if (o.f.clutter != null) $('clutter').value = o.f.clutter;
       if (o.f.device && document.querySelector('#device option[value="' + o.f.device + '"]')) $('device').value = o.f.device;
@@ -556,12 +587,12 @@
       fitTo(points);
       say('Открыта радиолиния «' + (o.f.name || '') + '». Нажмите «Рассчитать профиль».');
     } else {
-      nodes = (o.f.fnodes || []).map(function (p) { return { lat: p.lat, lng: p.lng, kind: p.kind, name: p.name || '' }; });
+      nodes = (o.f.fnodes || []).map(function (p) { var q = { lat: p.lat, lng: p.lng, kind: p.kind, name: p.name || '' }; if (p.nid) q.nid = p.nid; return q; });
+      cur.fiber = id; curSet(cur);
       saveNodes();
-      cur.fiber = id;
       setTool('fiber');
       fitTo(nodes);
-      say('Открыта линия «' + (o.f.name || '') + '». Правьте точки и нажмите «Сохранить изменения».');
+      say('Открыта линия «' + (o.f.name || '') + '». Точки тянутся, «+» — вставить опору; всё сохраняется само.');
     }
     curSet(cur);
   }
@@ -581,6 +612,14 @@
     var cur = curGet();
     [['radio', 'netSaveRadio', 'netCurRadio'], ['fiber', 'netSaveFiber', 'netCurFiber']].forEach(function (x) {
       var o = get(cur[x[0]]), lbl = $(x[2]);
+      if (x[0] === 'fiber') {
+        // ВОЛС сохраняется сама; кнопка — название и примечание
+        $(x[1]).textContent = 'Название…';
+        $(x[1]).style.display = o ? '' : 'none';
+        lbl.innerHTML = o ? 'Линия: <b>' + esc(o.f.name || '') + '</b> · ' + km(o.f.dist) + ' · сохраняется сама' :
+          'Новая линия: «Ставить точки» и нажимайте по трассе; на узле линия закончится.';
+        return;
+      }
       $(x[1]).textContent = o ? 'Сохранить изменения' : 'Сохранить в сеть';
       if (!o) { lbl.innerHTML = ''; return; }
       lbl.innerHTML = 'Открыта: <b>' + esc(o.f.name || '') + '</b><a data-new="' + x[0] + '" title="Дальнейшие изменения сохранить как новую линию">как новую</a>';
@@ -596,7 +635,11 @@
 
   if (typeof place === 'function') {
     var placeOrig = place;
-    window.place = function (ll) { return placeOrig(snap(ll)); };
+    window.place = function (ll) {
+      var n = nearNode(ll), r = placeOrig(n ? L.latLng(n.f.lat, n.f.lng) : ll);
+      if (n) { points.forEach(function (p) { if (p.lat === n.f.lat && p.lng === n.f.lng) p.nid = n.id; }); saveSession(); }
+      return r;
+    };
   }
   if (typeof addNode === 'function') {
     var addNodeOrig = addNode;
@@ -606,6 +649,14 @@
       if (n) { ll = L.latLng(n.f.lat, n.f.lng); if (!was.trim()) nameInp.value = n.f.name || ''; kindSel.value = 'узел'; }
       var r = addNodeOrig(ll);
       nameInp.value = was; kindSel.value = wasKind;
+      if (n && nodes.length) { nodes[nodes.length - 1].nid = n.id; saveNodes(); }
+      if (route) {
+        if (n && nodes.length >= 2) {
+          stopRoute();
+          say('Линия «' + lineName() + '» дошла до узла «' + (n.f.name || '') + '» и сохранена');
+        } else { armNode = true; $('nodeArm').classList.add('active'); }
+        bar();
+      }
       return r;
     };
   }
@@ -693,6 +744,203 @@
     drawGhost();
     return r;
   };
+
+
+  // ================================================================== соединения: ВОЛС и радиолинии между узлами
+  /* Как соединять:
+   *   - «ВОЛС до узла» (карточка узла) → нажать второй узел: линия создаётся сразу, по прямой; потом
+   *     её ведут по улицам — тянут точки и «+» между ними (вставка опоры);
+   *   - «ВОЛС по точкам» → нажимать на карту по трассе (каждое нажатие — опора), нажатие на узел
+   *     завершает линию; «Назад» убирает последнюю точку, «Готово» — закончить где угодно;
+   *   - «Новая линия» во вкладке «ВОЛС» — начать линию с пустого места;
+   *   - «Радиолиния до узла» → второй узел: радиолиния с точками A и B на узлах, профиль считается.
+   * Линия ВОЛС сохраняется в сеть сама при каждом изменении — ничего не теряется и нет
+   * «притягивания» к старой линии: новая линия всегда начинается отдельно. Точки на узлах помнят узел
+   * (nid): если узел передвинуть, концы линий едут за ним. */
+  var route = false, pick = null;
+  function drawing() { return route || !!pick; }
+
+  var barEl = document.createElement('div');
+  barEl.id = 'nmBar';
+  barEl.innerHTML = '<span id="nmBarText"></span><button type="button" class="secondary" id="nmBarBack">Назад</button><button type="button" id="nmBarDone">Готово</button>';
+  document.body.appendChild(barEl);
+
+  function lineName() { var o = get(curGet().fiber); return o ? o.f.name : 'новая линия'; }
+  function bar() {
+    var on = drawing();
+    barEl.classList.toggle('active', on);
+    if (!on) return;
+    if (pick) {
+      var from = get(pick.from);
+      $('nmBarText').innerHTML = '<b>' + (pick.type === 'fiber' ? 'ВОЛС' : 'Радиолиния') + ' от «' + esc(from ? from.f.name : '') + '»</b><small>Нажмите на второй узел</small>';
+      $('nmBarBack').style.display = 'none';
+      $('nmBarDone').textContent = 'Отмена';
+    } else {
+      $('nmBarText').innerHTML = '<b>«' + esc(lineName()) + '» · точек ' + nodes.length + '</b><small>Нажимайте по трассе — опоры; на узел — конец линии</small>';
+      $('nmBarBack').style.display = nodes.length ? '' : 'none';
+      $('nmBarDone').textContent = 'Готово';
+    }
+  }
+  $('nmBarBack').onclick = function () {
+    if (!nodes.length) return;
+    nodes.pop(); saveNodes(); drawNodes(); bar();
+  };
+  $('nmBarDone').onclick = function () { if (pick) cancelPick(); else stopRoute(); };
+
+  function nodePoint(o, kind) { return { lat: +o.f.lat, lng: +o.f.lng, kind: kind || 'узел', name: o.f.name || '', nid: o.id }; }
+  function lengthOf(list) {
+    var d = 0;
+    for (var i = 1; i < list.length; i++) d += haversine(list[i - 1].lat, list[i - 1].lng, list[i].lat, list[i].lng);
+    return +d.toFixed(3);
+  }
+  function autoName(list, old) {
+    var a = list[0], b = list[list.length - 1];
+    var an = a && a.nid && get(a.nid) ? get(a.nid).f.name : '', bn = b && b.nid && get(b.nid) ? get(b.nid).f.name : '';
+    if (an && bn) return an + ' — ' + bn;
+    if (an) return an + ' — …';
+    if (bn) return '… — ' + bn;
+    if (old && old.f.name) return old.f.name;
+    return 'ВОЛС ' + (alive().filter(function (x) { return x.type === 'fiber'; }).length + 1);
+  }
+
+  // линия ВОЛС из редактора — в сеть, при каждом изменении
+  var saving = false;
+  function autosaveFiber() {
+    if (saving || nodes.length < 2) return;
+    saving = true;
+    try {
+      var cur = curGet(), o = get(cur.fiber);
+      var list = nodes.map(function (p) {
+        var q = { lat: +(+p.lat).toFixed(6), lng: +(+p.lng).toFixed(6), kind: p.kind, name: p.name || '' };
+        if (p.nid) q.nid = p.nid;
+        return q;
+      });
+      var keepName = o && o.f.autoName === false;
+      var fields = { fnodes: list, dist: lengthOf(list), from: list[0].nid || '', to: list[list.length - 1].nid || '' };
+      if (!keepName) { fields.name = autoName(list, o); fields.autoName = true; }
+      var saved = put(o ? o.id : null, 'fiber', fields, o ? 'трасса изменена' : 'добавлен');
+      if (!o) { cur.fiber = saved.id; curSet(cur); }
+    } finally { saving = false; }
+  }
+  var saveNodesOrig = window.saveNodes;
+  window.saveNodes = function () {
+    var r = saveNodesOrig.apply(this, arguments);
+    autosaveFiber();
+    return r;
+  };
+
+  // новая линия: прежняя уже в сети, редактор освобождается
+  function newFiber() {
+    var cur = curGet();
+    cur.fiber = null; curSet(cur);
+    nodes = []; saveNodesOrig(); drawNodes();
+  }
+
+  function startRoute(fromId) {
+    if (pick) cancelPick();
+    netTab(false);
+    if (typeof fiberMode === 'undefined' || !fiberMode) setTool('fiber');
+    if (fromId !== undefined) {
+      newFiber();
+      var from = get(fromId);
+      if (from) { nodes.push(nodePoint(from)); saveNodes(); drawNodes(); map.panTo([from.f.lat, from.f.lng]); }
+    }
+    route = true;
+    armNode = true; $('nodeArm').classList.add('active');
+    refresh(); bar();
+  }
+  function stopRoute() {
+    route = false;
+    armNode = false; $('nodeArm').classList.remove('active');
+    autosaveFiber();
+    refresh(); bar();
+  }
+
+  function startPick(type, fromId) {
+    if (route) stopRoute();
+    pick = { type: type, from: fromId };
+    refresh(); bar();
+  }
+  function cancelPick() { pick = null; refresh(); bar(); }
+
+  function nodeTap(id) {
+    var o = get(id);
+    if (!o) return;
+    if (pick) {
+      if (id === pick.from) { say('Выберите другой узел'); return; }
+      var from = get(pick.from), type = pick.type;
+      pick = null; bar();
+      if (!from) { refresh(); return; }
+      var created;
+      if (type === 'fiber') {
+        var list = [nodePoint(from), nodePoint(o)];
+        created = put(null, 'fiber', { name: from.f.name + ' — ' + o.f.name, autoName: true, fnodes: list, dist: lengthOf(list), from: from.id, to: o.id });
+        openLine(created.id);
+        say('ВОЛС «' + created.f.name + '» создана по прямой. Ведите её по улицам: тяните точки и «+» между ними.');
+      } else {
+        var pts = [{ lat: +from.f.lat, lng: +from.f.lng, height: 15, nid: from.id }, { lat: +o.f.lat, lng: +o.f.lng, height: 15, nid: o.id }];
+        var dev = $('device');
+        created = put(null, 'radio', {
+          name: from.f.name + ' — ' + o.f.name, points: pts, freq: $('freq').value, clutter: $('clutter').value,
+          device: dev.value, deviceName: dev.value === 'none' ? '' : dev.selectedOptions[0].text, dist: lengthOf(pts), result: 'unknown'
+        });
+        openLine(created.id);
+        if (typeof calc === 'function') calc().then(function () {
+          if (lastProfile && lastProfile.report) put(created.id, 'radio', { result: lastProfile.report.state }, 'рассчитана');
+        });
+      }
+      return;
+    }
+    if (route) addNode(L.latLng(o.f.lat, o.f.lng));
+  }
+
+  // все линии, проходящие через узел
+  function linesAt(id) {
+    return alive().filter(function (l) {
+      return l.type !== 'node' && ((l.type === 'radio' ? l.f.points : l.f.fnodes) || []).some(function (p) { return p.nid === id; });
+    });
+  }
+  // узел передвинули — точки линий на нём едут за ним
+  function follow(id) {
+    var n = get(id);
+    if (!n) return 0;
+    var lat = +n.f.lat, lng = +n.f.lng, count = 0;
+    linesAt(id).forEach(function (l) {
+      var key = l.type === 'radio' ? 'points' : 'fnodes', list = copy(l.f[key]);
+      list.forEach(function (p) { if (p.nid === id) { p.lat = lat; p.lng = lng; } });
+      var fields = { dist: lengthOf(list) };
+      fields[key] = list;
+      if (l.type === 'radio') fields.result = 'unknown';
+      put(l.id, l.type, fields, 'конец перенесён за узлом');
+      count++;
+    });
+    var ch = false;
+    nodes.forEach(function (p) { if (p.nid === id) { p.lat = lat; p.lng = lng; ch = true; } });
+    if (ch) { saveNodesOrig(); drawNodes(); }
+    ch = false;
+    points.forEach(function (p) { if (p.nid === id) { p.lat = lat; p.lng = lng; ch = true; } });
+    if (ch) { redrawMap(); saveSession(); }
+    return count;
+  }
+
+  // кнопки вкладки «ВОЛС»: «Поставить» — ставить точки подряд, «Очистить» — новая линия
+  $('nodeArm').textContent = 'Ставить точки';
+  $('nodeArm').onclick = function () { if (route) stopRoute(); else startRoute(); };
+  $('nodeClear').textContent = 'Новая линия';
+  $('nodeClear').onclick = function () { if (route) stopRoute(); newFiber(); say('Новая линия: нажмите «Ставить точки» или начните от узла (карточка узла → «ВОЛС по точкам»).'); };
+
+  // выбор второго узла — можно нажать и рядом с ним
+  map.on('click', function (e) {
+    if (!pick) return;
+    var n = nearNode(e.latlng, 34);
+    if (n) nodeTap(n.id); else say('Нажмите на узел (значок на карте)');
+  });
+
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Escape' || !drawing()) return;
+    e.stopImmediatePropagation();
+    if (pick) cancelPick(); else stopRoute();
+  });
 
   // ================================================================== вкладка «Сеть»
 

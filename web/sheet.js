@@ -182,7 +182,7 @@
   // ---------------------------------------------------------------- постановка точки: шторка вниз
 
   var placing = false, before = null;
-  var armIds = ['addA', 'addB', 'addMore', 'nodeArm', 'netAdd'];
+  var armIds = ['addA', 'addB', 'addMore', 'nodeArm', 'netAdd', 'nmBar'];
   function watchPlacing() {
     var now = armIds.some(function (id) { return $(id) && $(id).classList.contains('active'); });
     if (now === placing) return;
