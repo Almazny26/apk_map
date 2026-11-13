@@ -93,6 +93,31 @@
   sat._kSat = hybSat._kSat = true;
   offlineTiles.setZIndex(0); osm.setZIndex(1); sat.setZIndex(3); hybSat.setZIndex(3); hybNames.setZIndex(4);
 
+  // ---------------------------------------------------------------- поворот двумя пальцами — не сразу
+
+  /* Плагин поворачивает карту при любом движении двух пальцев, и обычное изменение масштаба чуть
+   * сбивало север. Теперь поворот начинается, только когда пальцы провернулись больше чем на 10°
+   * (как в привычных картах); до этого меняется один масштаб. */
+  (function () {
+    var TG = L.Map.TouchGestures && L.Map.TouchGestures.prototype;
+    if (!TG || !TG._onTouchMove) return;
+    var move = TG._onTouchMove, FREE = 10;
+    function ang(a, b) { return Math.atan2(a.x - b.x, a.y - b.y) * 180 / Math.PI; }
+    TG._onTouchMove = function (e) {
+      if (this._kStart !== this._startP1) { this._kStart = this._startP1; this._kFree = false; }      // новый жест
+      if (!this._rotating || this._kFree || !this._startP1 || !this._startP2 || !e.touches || e.touches.length !== 2) return move.apply(this, arguments);
+      var t = e.touches, rot = ang({ x: t[0].clientX, y: t[0].clientY }, { x: t[1].clientX, y: t[1].clientY }) - ang(this._startP1, this._startP2);
+      rot = ((rot + 180) % 360 + 360) % 360 - 180;
+      if (Math.abs(rot) >= FREE) {
+        this._kFree = true;
+        this._startBearing += rot;            // поворот считается от этого положения пальцев — без рывка
+        return move.apply(this, arguments);
+      }
+      this._rotating = false;
+      try { return move.apply(this, arguments); } finally { this._rotating = true; }
+    };
+  })();
+
   // ---------------------------------------------------------------- интернет включён всегда
 
   /* Выключателя «Карта из интернета» больше нет (заказчик, 3.3): есть связь — карта грузится, нет —

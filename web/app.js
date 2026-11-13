@@ -261,9 +261,6 @@
     '@media (max-width:899px){body.ap-nozoom .ap-ctl .grp.zoom{display:none}}',
     '.ap-ctl .grp.north{display:none}body.ap-rot .ap-ctl .grp.north{display:flex}.ap-ctl .grp.north svg{width:26px;height:26px}',
     '.ap-ctl .grp.undo{display:none}body.ap-edit.ap-canundo:not(.ap-tool) .ap-ctl .grp.undo{display:flex}',
-    '#apHint{position:fixed;left:50%;top:38%;transform:translate(-50%,-50%);z-index:900;max-width:min(320px,80vw);text-align:center;background:var(--panel);color:var(--text);'+
-      'border-radius:16px;padding:14px 18px;box-shadow:var(--shadow);font:14px/1.4 var(--font);pointer-events:none;display:none}',
-    '#apHint b{display:block;font-size:16px;margin-bottom:4px}',
     '.ap .srow{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--line);flex-wrap:wrap}',
     '.ap .srow>span{flex:1 1 150px;font-size:14px}.ap .srow .chips{margin:0;flex:0 1 auto}.ap .srow .chip{min-height:32px;padding:5px 11px;font-size:13px}',
     '.ap .srow small{display:block;color:var(--muted);font-size:12px}',
@@ -714,7 +711,6 @@
     select(null);
     if (view && view.k !== 'search') closeSheet();
     try { localStorage.setItem('karta_mode', m); } catch (e) { /* не важно */ }
-    updHint();
     toast(m === 'edit' ? 'Редактирование: «+» — добавить, долгое нажатие — меню' : 'Просмотр: ничего не сдвинется');
   }
   bar.querySelectorAll('[data-mode]').forEach(function (b) { b.onclick = function () { if (mode !== b.getAttribute('data-mode')) setMode(b.getAttribute('data-mode')); }; });
@@ -772,7 +768,6 @@
     objs.filter(function (o) { return o.type === 'node' && isFinite(o.f.lat) && isFinite(o.f.lng); }).forEach(drawNode);
     drawPoints();
     drawTool();
-    updHint();
     if (view && (view.k === 'card' || view.k === 'pt' || view.k === 'line' || view.k === 'nodemenu' || view.k === 'tool')) renderView();
   }
 
@@ -2150,17 +2145,8 @@
     placeCross();
   });
 
-  // ================================================================== подсказка на пустой карте, кнопка «назад»
+  // ================================================================== кнопка «назад»
 
-  var hint = el('div');
-  hint.id = 'apHint';
-  document.body.appendChild(hint);
-  function updHint() {
-    var show = !alive().length && !tool && !view;
-    hint.style.display = show ? 'block' : 'none';
-    if (show) hint.innerHTML = mode === 'edit' ? '<b>Сеть пока пуста</b>Нажмите «+» справа внизу: узел, линия ВОЛС или радиолиния.'
-      : '<b>Сеть пока пуста</b>Включите «' + (window.innerWidth <= 420 ? 'Правка' : 'Редактирование') + '» вверху и нажмите «+» — или загрузите карту из файла: «⋮» → «Обмен данными».';
-  }
   /* кнопка «назад» на телефоне: закрыть то, что открыто; false — закрывать нечего */
   window.__kartaBack = function () {
     if (dlg.classList.contains('show')) { if (!dlgLock) closeDlg(); return true; }
