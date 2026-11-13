@@ -12,8 +12,8 @@ android {
 
     defaultConfig {
         applicationId 'ru.netmap.app'
-        minSdk 26
-        // 34, а не 35: с 35 Android принудительно рисует приложение под системными панелями
+        minSdk 24
+        // как у приложения товарища; 34, а не 35: с 35 Android рисует приложение под системными панелями
         targetSdk 34
         versionCode vc
         versionName vn

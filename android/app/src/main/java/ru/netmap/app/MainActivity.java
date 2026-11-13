@@ -1,109 +1,436 @@
 package ru.netmap.app;
 
-import android.Manifest;
 import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.content.ContentValues;
 import android.content.Intent;
 import android.database.Cursor;
-import android.provider.OpenableColumns;
-import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
-import android.view.WindowManager;
-import android.webkit.GeolocationPermissions;
+import android.os.Environment;
+import android.provider.MediaStore;
+import android.provider.OpenableColumns;
+import android.util.Base64;
+import android.view.View;
 import android.webkit.JavascriptInterface;
-import android.webkit.WebChromeClient;
+import android.webkit.RenderProcessGoneDetail;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.widget.Toast;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+import java.io.BufferedReader;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 /**
- * Оболочка для клиента «Карта сети».
+ * Оболочка приложения «Карта сети» (основа — приложение товарища «WiFi Френель» 1.24).
  *
- * Сам клиент (каталог web/ репозитория) вшит в APK и открывается из assets, поэтому приложение
- * работает без сервера и без связи. Оболочка добавляет то, чего нет у страницы в браузере:
- *   - хранение данных в файлах приложения (мост NetMapNative.load/save);
- *   - обмен файлами с диспетчером: «Поделиться» (мессенджер, почта), «Сохранить» в выбранную папку,
- *     открытие файла карты — через выбор файла или прямо из мессенджера («Открыть с помощью»);
- *   - кэш плиток карты на диске, чтобы карта открывалась без интернета;
- *   - разрешение на геолокацию.
+ * Поведение перенесено из его оболочки без изменений:
+ *   - страница web/index.html открывается из assets; плитки карты и Leaflet отдаются из assets
+ *     по адресу https://local.tiles/...;
+ *   - без галочки «Онлайн» приложение не выходит в сеть (setBlockNetworkLoads), все внешние запросы
+ *     получают пустой ответ;
+ *   - мост AndroidBridge: fetchElevations (рельеф из assets/dem/dem.bin, при «Онлайн» — open-meteo),
+ *     saveImage (PNG профиля в «Загрузки»), setOnline.
+ *
+ * Добавлено для обмена файлами (мост KartaFiles, им пользуется web/exchange.js):
+ *   - «Поделиться» файлом данных (мессенджер, почта) и «Сохранить» в выбранную папку;
+ *   - открытие файла: выбор в памяти телефона или «Открыть с помощью» из мессенджера.
  */
 public class MainActivity extends Activity {
 
-    private static final String START_URL = "file:///android_asset/index.html";
-    /** Клиент помечает адреса плиток этим параметром; перед запросом к серверу карт он убирается. */
-    private static final String TILE_MARK = "nmcache=1";
-    private static final long TILE_MAX_AGE_MS = 90L * 24 * 3600 * 1000;
-    private static final int REQ_LOCATION = 1;
+    private static final String PREFS = "sec";
     private static final int REQ_OPEN = 2;
     private static final int REQ_SAVE = 3;
     private static final long MAX_FILE = 64L * 1024 * 1024;
 
     private WebView web;
-    private File tileDir;
-    private File dataDir;
-    private volatile long lastTileFailure = 0;
+    private Dem dem;
 
-    /** Открытый файл ждёт, пока страница его заберёт (большие строки не гоняем через evaluateJavascript). */
     private volatile String openedName = null;
     private volatile String openedText = null;
     private volatile String openedError = null;
     private String pendingSaveText = null;
     private boolean pageReady = false;
 
-    private GeolocationPermissions.Callback geoCallback;
-    private String geoOrigin;
+    private boolean isOnline() {
+        return getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean("online", false);
+    }
 
-    @SuppressLint("SetJavaScriptEnabled")
+    @SuppressLint({"SetJavaScriptEnabled", "AddJavascriptInterface"})
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-
-        tileDir = new File(getFilesDir(), "tiles");
-        dataDir = new File(getFilesDir(), "data");
-        tileDir.mkdirs();
-        dataDir.mkdirs();
-
         web = new WebView(this);
         setContentView(web);
-
         WebSettings s = web.getSettings();
         s.setJavaScriptEnabled(true);
         s.setDomStorageEnabled(true);
-        s.setDatabaseEnabled(true);
         s.setAllowFileAccess(true);
+        s.setAllowContentAccess(false);
         s.setAllowFileAccessFromFileURLs(true);
-        // Страница открыта из assets (file://), а сервер у каждого свой — разрешаем ей ходить к нему.
-        s.setAllowUniversalAccessFromFileURLs(true);
-        s.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
-        s.setGeolocationEnabled(true);
-        s.setSupportZoom(false);
-        s.setBuiltInZoomControls(false);
-        s.setTextZoom(100);
-
-        web.addJavascriptInterface(new Bridge(), "NetMapNative");
+        s.setAllowUniversalAccessFromFileURLs(false);
+        s.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
+        s.setGeolocationEnabled(false);
+        if (Build.VERSION.SDK_INT >= 26) {
+            s.setSafeBrowsingEnabled(false);
+        }
+        s.setLoadsImagesAutomatically(true);
+        s.setBlockNetworkImage(false);
+        s.setBlockNetworkLoads(true);
+        s.setUseWideViewPort(true);
+        s.setLoadWithOverviewMode(true);
+        s.setCacheMode(WebSettings.LOAD_NO_CACHE);
+        s.setUserAgentString("Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36");
+        WebView.setWebContentsDebuggingEnabled(false);
+        web.addJavascriptInterface(new Bridge(), "AndroidBridge");
+        web.addJavascriptInterface(new Files(), "KartaFiles");
         web.setWebViewClient(new Client());
-        web.setWebChromeClient(new Chrome());
-        web.loadUrl(START_URL);
+        web.loadUrl("file:///android_asset/index.html");
         handleIncoming(getIntent());
     }
+
+    @Override
+    public void onBackPressed() {
+        if (web != null && web.canGoBack()) {
+            web.goBack();
+        } else {
+            super.onBackPressed();
+        }
+    }
+
+    // ------------------------------------------------------------------ страница
+
+    private class Client extends WebViewClient {
+        @Override
+        public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
+            runOnUiThread(() -> {
+                if (web != null) {
+                    setContentView(new View(MainActivity.this));
+                    web.destroy();
+                    web = null;
+                }
+                recreate();
+            });
+            return true;
+        }
+
+        @Override
+        public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+            Uri url = request.getUrl();
+            String host = url.getHost();
+            boolean local = host != null && "local.tiles".equals(host);
+            if (host == null || local) {
+                String path = url.getPath();
+                if (path == null) {
+                    return null;
+                }
+                int t = path.indexOf("tiles/");
+                int l = path.indexOf("leaflet/");
+                String asset = t >= 0 ? path.substring(t) : (l >= 0 ? path.substring(l) : null);
+                if (asset == null || asset.contains("..")) {
+                    return super.shouldInterceptRequest(view, request);
+                }
+                try {
+                    InputStream in = getAssets().open(asset);
+                    String mime = "image/png";
+                    if (asset.endsWith(".css")) {
+                        mime = "text/css";
+                    } else if (asset.endsWith(".js")) {
+                        mime = "application/javascript";
+                    }
+                    return new WebResourceResponse(mime, null, in);
+                } catch (IOException e) {
+                    return super.shouldInterceptRequest(view, request);
+                }
+            }
+            if (isOnline()) {
+                return null;
+            }
+            return new WebResourceResponse("text/plain", "utf-8", new ByteArrayInputStream(new byte[0]));
+        }
+
+        @Override
+        public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+            String scheme = request.getUrl().getScheme();
+            if ("mailto".equals(scheme)) {
+                try {
+                    startActivity(new Intent(Intent.ACTION_VIEW, request.getUrl()));
+                } catch (Exception ignored) {
+                    // нет почтового приложения
+                }
+                return true;
+            }
+            if ("file".equals(scheme)) {
+                return false;
+            }
+            return !isOnline();
+        }
+    }
+
+    // ------------------------------------------------------------------ рельеф (как у товарища)
+
+    static final class Dem {
+        static final class Tile {
+            int lat;
+            int lon;
+            int n;
+            short[] v;
+        }
+
+        final java.util.ArrayList<Tile> tiles = new java.util.ArrayList<>();
+
+        static Dem load(InputStream in) throws IOException {
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) >= 0) {
+                out.write(buf, 0, n);
+            }
+            in.close();
+            java.nio.ByteBuffer b = java.nio.ByteBuffer.wrap(out.toByteArray()).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+            byte[] magic = new byte[4];
+            b.get(magic);
+            if (magic[0] != 'D' || magic[1] != 'E') {
+                throw new IOException("bad dem");
+            }
+            int count = b.getShort() & 0xFFFF;
+            Dem d = new Dem();
+            for (int i = 0; i < count; i++) {
+                Tile t = new Tile();
+                t.lat = b.getShort();
+                t.lon = b.getShort();
+                t.n = b.getShort() & 0xFFFF;
+                t.v = new short[t.n * t.n];
+                for (int k = 0; k < t.v.length; k++) {
+                    t.v[k] = b.getShort();
+                }
+                d.tiles.add(t);
+            }
+            return d;
+        }
+
+        Double sample(double lat, double lon) {
+            int ilat = (int) Math.floor(lat);
+            int ilon = (int) Math.floor(lon);
+            for (Tile t : tiles) {
+                if (t.lat == ilat && t.lon == ilon) {
+                    double r = ((t.lat + 1.0) - lat) * (t.n - 1);
+                    double c = (lon - t.lon) * (t.n - 1);
+                    int r0 = (int) Math.floor(r);
+                    int c0 = (int) Math.floor(c);
+                    int r1 = Math.min(t.n - 1, r0 + 1);
+                    int c1 = Math.min(t.n - 1, c0 + 1);
+                    r0 = Math.max(0, Math.min(t.n - 1, r0));
+                    c0 = Math.max(0, Math.min(t.n - 1, c0));
+                    double fr = r - Math.floor(r);
+                    double fc = c - Math.floor(c);
+                    double bottom = t.v[r1 * t.n + c1] * fc + t.v[r1 * t.n + c0] * (1.0 - fc);
+                    double top = t.v[r0 * t.n + c1] * fc + t.v[r0 * t.n + c0] * (1.0 - fc);
+                    return bottom * fr + (1.0 - fr) * top;
+                }
+            }
+            return null;
+        }
+    }
+
+    private Dem dem() throws IOException {
+        if (dem == null) {
+            dem = Dem.load(getAssets().open("dem/dem.bin"));
+        }
+        return dem;
+    }
+
+    // ------------------------------------------------------------------ мост товарища
+
+    private class Bridge {
+        @JavascriptInterface
+        public String fetchElevations(String locs) {
+            JSONArray partial = null;
+            try {
+                Dem d = dem();
+                String[] parts = locs.split("\\|");
+                JSONArray arr = new JSONArray();
+                int ok = 0;
+                for (String part : parts) {
+                    String[] ll = part.split(",");
+                    JSONObject o = new JSONObject();
+                    if (ll.length >= 2) {
+                        Double v = d.sample(Double.parseDouble(ll[0]), Double.parseDouble(ll[1]));
+                        if (v != null) {
+                            o.put("elevation", v);
+                            ok++;
+                        } else {
+                            o.put("elevation", JSONObject.NULL);
+                        }
+                    }
+                    arr.put(o);
+                }
+                if (ok == parts.length && parts.length > 0) {
+                    return offline(arr);
+                }
+                partial = arr;
+            } catch (Exception ignored) {
+                // рельефа нет — дальше по обстоятельствам
+            }
+            if (isOnline()) {
+                try {
+                    return openMeteo(locs);
+                } catch (Exception ignored) {
+                    // онлайн не ответил
+                }
+            }
+            try {
+                if (partial != null) {
+                    return offline(partial);
+                }
+            } catch (Exception ignored) {
+                // ниже — ошибка
+            }
+            return "{\"status\":\"ERROR\",\"error\":\"offline\"}";
+        }
+
+        @JavascriptInterface
+        public String saveImage(String dataUrl) {
+            if (dataUrl == null || !dataUrl.startsWith("data:image/png;base64,") || dataUrl.length() > 8000000) {
+                return "ERR:bad image";
+            }
+            try {
+                byte[] png = Base64.decode(dataUrl.substring(22), Base64.DEFAULT);
+                String name = "fresnel_" + System.currentTimeMillis() + ".png";
+                if (Build.VERSION.SDK_INT < 29) {
+                    File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+                    if (!dir.exists()) {
+                        dir.mkdirs();
+                    }
+                    try (FileOutputStream out = new FileOutputStream(new File(dir, name))) {
+                        out.write(png);
+                    }
+                } else {
+                    ContentValues cv = new ContentValues();
+                    cv.put(MediaStore.MediaColumns.DISPLAY_NAME, name);
+                    cv.put(MediaStore.MediaColumns.MIME_TYPE, "image/png");
+                    cv.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
+                    Uri uri = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv);
+                    if (uri == null) {
+                        return "ERR:no uri";
+                    }
+                    try (OutputStream out = getContentResolver().openOutputStream(uri)) {
+                        if (out == null) {
+                            return "ERR:stream";
+                        }
+                        out.write(png);
+                    }
+                }
+                runOnUiThread(() -> Toast.makeText(MainActivity.this, "Сохранено: " + name, Toast.LENGTH_LONG).show());
+                return "OK:" + name;
+            } catch (Exception e) {
+                return "ERR:" + e.getMessage();
+            }
+        }
+
+        @JavascriptInterface
+        public void setOnline(boolean on) {
+            getSharedPreferences(PREFS, MODE_PRIVATE).edit().putBoolean("online", on).commit();
+            CountDownLatch latch = new CountDownLatch(1);
+            runOnUiThread(() -> {
+                try {
+                    if (web != null) {
+                        WebSettings s = web.getSettings();
+                        s.setBlockNetworkLoads(!on);
+                        s.setBlockNetworkImage(false);
+                        s.setCacheMode(on ? WebSettings.LOAD_DEFAULT : WebSettings.LOAD_NO_CACHE);
+                    }
+                } finally {
+                    latch.countDown();
+                }
+            });
+            try {
+                latch.await(1500, TimeUnit.MILLISECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+
+    private static String offline(JSONArray results) throws Exception {
+        JSONObject o = new JSONObject();
+        o.put("status", "OK");
+        o.put("source", "offline");
+        o.put("results", results);
+        return o.toString();
+    }
+
+    private static String openMeteo(String locs) throws Exception {
+        StringBuilder lat = new StringBuilder(), lon = new StringBuilder();
+        for (String part : locs.split("\\|")) {
+            String[] ll = part.split(",");
+            if (ll.length >= 2) {
+                if (lat.length() > 0) {
+                    lat.append(',');
+                    lon.append(',');
+                }
+                lat.append(ll[0]);
+                lon.append(ll[1]);
+            }
+        }
+        JSONArray el = new JSONObject(httpGet("https://api.open-meteo.com/v1/elevation?latitude=" + lat + "&longitude=" + lon))
+                .getJSONArray("elevation");
+        JSONArray res = new JSONArray();
+        for (int i = 0; i < el.length(); i++) {
+            if (el.isNull(i)) {
+                return "{\"status\":\"ERROR\",\"error\":\"null elevation\"}";
+            }
+            JSONObject o = new JSONObject();
+            o.put("elevation", el.getDouble(i));
+            res.put(o);
+        }
+        JSONObject out = new JSONObject();
+        out.put("status", "OK");
+        out.put("results", res);
+        return out.toString();
+    }
+
+    private static String httpGet(String url) throws IOException {
+        HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
+        c.setRequestMethod("GET");
+        c.setConnectTimeout(20000);
+        c.setReadTimeout(20000);
+        int code = c.getResponseCode();
+        InputStream in = code >= 200 && code < 300 ? c.getInputStream() : c.getErrorStream();
+        StringBuilder sb = new StringBuilder();
+        try (BufferedReader r = new BufferedReader(new InputStreamReader(in))) {
+            String line;
+            while ((line = r.readLine()) != null) {
+                sb.append(line);
+            }
+        }
+        c.disconnect();
+        if (code < 200 || code >= 300) {
+            throw new IOException("HTTP " + code);
+        }
+        return sb.toString();
+    }
+
+    // ------------------------------------------------------------------ обмен файлами (добавлено)
 
     @Override
     protected void onNewIntent(Intent intent) {
@@ -113,28 +440,36 @@ public class MainActivity extends Activity {
 
     /** Файл, открытый из мессенджера («Открыть с помощью» или «Поделиться» в приложение). */
     private void handleIncoming(Intent intent) {
-        if (intent == null) return;
+        if (intent == null) {
+            return;
+        }
         Uri uri = null;
         if (Intent.ACTION_VIEW.equals(intent.getAction())) {
             uri = intent.getData();
         } else if (Intent.ACTION_SEND.equals(intent.getAction())) {
             uri = intent.getParcelableExtra(Intent.EXTRA_STREAM);
         }
-        if (uri != null) readUri(uri);
+        if (uri != null) {
+            readUri(uri);
+        }
     }
 
     private void readUri(Uri uri) {
         new Thread(() -> {
             String name = displayName(uri), text = null, error = null;
             try (InputStream in = getContentResolver().openInputStream(uri)) {
-                if (in == null) throw new Exception("нет доступа к файлу");
+                if (in == null) {
+                    throw new IOException("нет доступа к файлу");
+                }
                 ByteArrayOutputStream out = new ByteArrayOutputStream();
                 byte[] buf = new byte[65536];
                 int n;
                 long total = 0;
                 while ((n = in.read(buf)) > 0) {
                     total += n;
-                    if (total > MAX_FILE) throw new Exception("файл слишком большой");
+                    if (total > MAX_FILE) {
+                        throw new IOException("файл слишком большой");
+                    }
                     out.write(buf, 0, n);
                 }
                 text = new String(out.toByteArray(), StandardCharsets.UTF_8);
@@ -149,13 +484,17 @@ public class MainActivity extends Activity {
     }
 
     private void notifyOpened() {
-        if (!pageReady || (openedText == null && openedError == null)) return;
-        web.evaluateJavascript("window.__nmOpened && window.__nmOpened()", null);
+        if (web == null || !pageReady || (openedText == null && openedError == null)) {
+            return;
+        }
+        web.evaluateJavascript("window.__kartaOpened && window.__kartaOpened()", null);
     }
 
     private String displayName(Uri uri) {
         try (Cursor c = getContentResolver().query(uri, new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null)) {
-            if (c != null && c.moveToFirst()) return c.getString(0);
+            if (c != null && c.moveToFirst()) {
+                return c.getString(0);
+            }
         } catch (Exception ignored) {
             // имя не важно
         }
@@ -163,17 +502,24 @@ public class MainActivity extends Activity {
         return last == null ? "" : last;
     }
 
+    private void js(String code) {
+        if (web != null) {
+            web.evaluateJavascript(code, null);
+        }
+    }
+
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == REQ_OPEN) {
-            if (resultCode == RESULT_OK && data != null && data.getData() != null) readUri(data.getData());
-            else web.evaluateJavascript("window.__nmOpenCancelled && window.__nmOpenCancelled()", null);
+            if (resultCode == RESULT_OK && data != null && data.getData() != null) {
+                readUri(data.getData());
+            }
         } else if (requestCode == REQ_SAVE) {
             String text = pendingSaveText;
             pendingSaveText = null;
             if (resultCode != RESULT_OK || data == null || data.getData() == null || text == null) {
-                web.evaluateJavascript("window.__nmSaved && window.__nmSaved(false)", null);
+                js("window.__kartaSaved && window.__kartaSaved(false)");
                 return;
             }
             boolean ok;
@@ -183,136 +529,16 @@ public class MainActivity extends Activity {
             } catch (Exception e) {
                 ok = false;
             }
-            web.evaluateJavascript("window.__nmSaved && window.__nmSaved(" + ok + ")", null);
+            js("window.__kartaSaved && window.__kartaSaved(" + ok + ")");
         }
     }
 
-    @Override
-    public void onBackPressed() {
-        // Сначала даём клиенту закрыть открытую панель; если закрывать нечего — сворачиваем приложение.
-        web.evaluateJavascript("(window.__nmBack && window.__nmBack()) ? 'handled' : 'no'", value -> {
-            if (value == null || !value.contains("handled")) {
-                moveTaskToBack(true);
-            }
-        });
+    private static String safeName(String name) {
+        String n = name == null ? "" : name.replaceAll("[\\\\/:*?\"<>|\\r\\n]", "_").trim();
+        return n.isEmpty() ? "karta-seti.json" : n;
     }
 
-    @Override
-    protected void onDestroy() {
-        if (web != null) {
-            web.destroy();
-        }
-        super.onDestroy();
-    }
-
-    @Override
-    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode != REQ_LOCATION || geoCallback == null) {
-            return;
-        }
-        boolean granted = false;
-        for (int r : grantResults) {
-            if (r == PackageManager.PERMISSION_GRANTED) {
-                granted = true;
-            }
-        }
-        geoCallback.invoke(geoOrigin, granted, false);
-        geoCallback = null;
-        geoOrigin = null;
-    }
-
-    // ------------------------------------------------------------------ мост для клиента
-
-    public class Bridge {
-        @JavascriptInterface
-        public String load(String key) {
-            File f = dataFile(key);
-            if (f == null || !f.exists()) {
-                return null;
-            }
-            try (InputStream in = new FileInputStream(f)) {
-                return new String(readAll(in), StandardCharsets.UTF_8);
-            } catch (Exception e) {
-                return null;
-            }
-        }
-
-        @JavascriptInterface
-        public boolean save(String key, String value) {
-            File f = dataFile(key);
-            if (f == null) {
-                return false;
-            }
-            if (value == null) {
-                return !f.exists() || f.delete();
-            }
-            // Пишем во временный файл и переименовываем: при обрыве записи старые данные не портятся.
-            File tmp = new File(f.getPath() + ".tmp");
-            try (FileOutputStream out = new FileOutputStream(tmp)) {
-                out.write(value.getBytes(StandardCharsets.UTF_8));
-                out.getFD().sync();
-            } catch (Exception e) {
-                tmp.delete();
-                return false;
-            }
-            return tmp.renameTo(f);
-        }
-
-        @JavascriptInterface
-        public String versionName() {
-            try {
-                return getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
-            } catch (Exception e) {
-                return "";
-            }
-        }
-
-        @JavascriptInterface
-        public int versionCode() {
-            try {
-                android.content.pm.PackageInfo info = getPackageManager().getPackageInfo(getPackageName(), 0);
-                // getLongVersionCode появился в Android 9; на Android 8 берём старое поле
-                return Build.VERSION.SDK_INT >= 28 ? (int) info.getLongVersionCode() : info.versionCode;
-            } catch (Exception e) {
-                return 0;
-            }
-        }
-
-        /** Сколько места занимает сохранённая карта, в байтах. */
-        @JavascriptInterface
-        public double tileCacheBytes() {
-            long total = 0;
-            File[] files = tileDir.listFiles();
-            if (files != null) {
-                for (File f : files) {
-                    total += f.length();
-                }
-            }
-            return (double) total;
-        }
-
-        @JavascriptInterface
-        public int tileCacheCount() {
-            String[] names = tileDir.list();
-            return names == null ? 0 : names.length;
-        }
-
-        @JavascriptInterface
-        public void clearTileCache() {
-            File[] files = tileDir.listFiles();
-            if (files != null) {
-                for (File f : files) {
-                    f.delete();
-                }
-            }
-        }
-
-        @JavascriptInterface
-        public void openExternal(String url) {
-            openInSystem(Uri.parse(url));
-        }
-
+    private class Files {
         /** Страница загрузилась и готова принять открытый файл. */
         @JavascriptInterface
         public void ready() {
@@ -327,7 +553,6 @@ public class MainActivity extends Activity {
             return openedName;
         }
 
-        /** Текст открытого файла; после вызова файл забывается. */
         @JavascriptInterface
         public String takeOpenedText() {
             String t = openedText;
@@ -342,7 +567,6 @@ public class MainActivity extends Activity {
             return e;
         }
 
-        /** Выбор файла карты в памяти телефона. */
         @JavascriptInterface
         public void openFile() {
             runOnUiThread(() -> {
@@ -352,12 +576,11 @@ public class MainActivity extends Activity {
                 try {
                     startActivityForResult(i, REQ_OPEN);
                 } catch (Exception e) {
-                    web.evaluateJavascript("window.__nmOpenCancelled && window.__nmOpenCancelled()", null);
+                    Toast.makeText(MainActivity.this, "Не удалось открыть выбор файла", Toast.LENGTH_LONG).show();
                 }
             });
         }
 
-        /** «Поделиться» файлом: мессенджер, почта, диск. */
         @JavascriptInterface
         public boolean shareText(String fileName, String text) {
             try {
@@ -365,7 +588,9 @@ public class MainActivity extends Activity {
                 dir.mkdirs();
                 File[] old = dir.listFiles();
                 if (old != null) {
-                    for (File f : old) f.delete();
+                    for (File f : old) {
+                        f.delete();
+                    }
                 }
                 File f = new File(dir, safeName(fileName));
                 try (FileOutputStream out = new FileOutputStream(f)) {
@@ -386,7 +611,6 @@ public class MainActivity extends Activity {
             }
         }
 
-        /** «Сохранить» файл в выбранную папку (например, «Загрузки»). Результат — в window.__nmSaved(ok). */
         @JavascriptInterface
         public void saveText(String fileName, String text) {
             runOnUiThread(() -> {
@@ -399,185 +623,14 @@ public class MainActivity extends Activity {
                     startActivityForResult(i, REQ_SAVE);
                 } catch (Exception e) {
                     pendingSaveText = null;
-                    web.evaluateJavascript("window.__nmSaved && window.__nmSaved(false)", null);
+                    js("window.__kartaSaved && window.__kartaSaved(false)");
                 }
             });
         }
 
         @JavascriptInterface
-        public void keepScreenOn(boolean on) {
-            runOnUiThread(() -> {
-                if (on) {
-                    getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-                } else {
-                    getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-                }
-            });
-        }
-    }
-
-    private static String safeName(String name) {
-        String n = name == null ? "" : name.replaceAll("[\\\\/:*?\"<>|\\r\\n]", "_").trim();
-        return n.isEmpty() ? "karta-seti.json" : n;
-    }
-
-    private File dataFile(String key) {
-        if (key == null || !key.matches("[A-Za-z0-9_\\-]{1,64}")) {
-            return null;
-        }
-        return new File(dataDir, key + ".json");
-    }
-
-    private void openInSystem(Uri uri) {
-        try {
-            startActivity(new Intent(Intent.ACTION_VIEW, uri));
-        } catch (Exception ignored) {
-            // нет приложения, которое умеет открыть ссылку
-        }
-    }
-
-    // ------------------------------------------------------------------ страница и кэш карты
-
-    private class Client extends WebViewClient {
-        @Override
-        public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
-            Uri uri = request.getUrl();
-            if ("file".equals(uri.getScheme())) {
-                return false;
-            }
-            // Любая внешняя ссылка (например, скачивание обновления) открывается в браузере телефона.
-            openInSystem(uri);
-            return true;
-        }
-
-        @Override
-        public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
-            try {
-                if (!"GET".equalsIgnoreCase(request.getMethod())) {
-                    return null;
-                }
-                String url = request.getUrl().toString();
-                if (!url.startsWith("http") || !url.contains(TILE_MARK)) {
-                    return null;
-                }
-                return serveTile(stripMark(url));
-            } catch (Throwable t) {
-                return null;
-            }
-        }
-    }
-
-    private static String stripMark(String url) {
-        String u = url.replace("?" + TILE_MARK + "&", "?")
-                .replace("?" + TILE_MARK, "")
-                .replace("&" + TILE_MARK, "");
-        return u;
-    }
-
-    private WebResourceResponse serveTile(String url) throws Exception {
-        File f = new File(tileDir, sha1(url));
-        boolean have = f.exists() && f.length() > 0;
-        boolean fresh = have && System.currentTimeMillis() - f.lastModified() < TILE_MAX_AGE_MS;
-        if (!fresh) {
-            // Недавно уже не получилось скачать — значит, связи нет; не заставляем карту ждать таймаутов.
-            boolean offline = System.currentTimeMillis() - lastTileFailure < 20000;
-            if (!(have && offline)) {
-                try {
-                    download(url, f);
-                    have = true;
-                } catch (Exception e) {
-                    lastTileFailure = System.currentTimeMillis();
-                }
-            }
-        }
-        Map<String, String> headers = new HashMap<>();
-        headers.put("Access-Control-Allow-Origin", "*");
-        if (!have) {
-            return new WebResourceResponse("text/plain", "utf-8", 504, "Offline", headers,
-                    new ByteArrayInputStream(new byte[0]));
-        }
-        headers.put("Cache-Control", "max-age=86400");
-        return new WebResourceResponse(sniffMime(f), null, 200, "OK", headers, new FileInputStream(f));
-    }
-
-    private void download(String url, File target) throws Exception {
-        HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
-        c.setConnectTimeout(8000);
-        c.setReadTimeout(15000);
-        c.setRequestProperty("User-Agent", "KartaSeti/1.0 (Android; internal network map)");
-        try {
-            if (c.getResponseCode() != 200) {
-                throw new Exception("HTTP " + c.getResponseCode());
-            }
-            byte[] body;
-            try (InputStream in = c.getInputStream()) {
-                body = readAll(in);
-            }
-            if (body.length == 0) {
-                throw new Exception("empty");
-            }
-            File tmp = new File(target.getPath() + "." + Thread.currentThread().getId() + ".tmp");
-            try (FileOutputStream out = new FileOutputStream(tmp)) {
-                out.write(body);
-            }
-            if (!tmp.renameTo(target)) {
-                tmp.delete();
-            }
-        } finally {
-            c.disconnect();
-        }
-    }
-
-    private static String sniffMime(File f) {
-        byte[] head = new byte[12];
-        try (InputStream in = new FileInputStream(f)) {
-            int n = in.read(head);
-            if (n >= 3 && (head[0] & 0xFF) == 0xFF && (head[1] & 0xFF) == 0xD8) {
-                return "image/jpeg";
-            }
-            if (n >= 12 && head[0] == 'R' && head[1] == 'I' && head[8] == 'W' && head[9] == 'E') {
-                return "image/webp";
-            }
-        } catch (Exception ignored) {
-            // считаем PNG
-        }
-        return "image/png";
-    }
-
-    private static byte[] readAll(InputStream in) throws Exception {
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        byte[] buf = new byte[16384];
-        int n;
-        while ((n = in.read(buf)) > 0) {
-            out.write(buf, 0, n);
-        }
-        return out.toByteArray();
-    }
-
-    private static String sha1(String s) throws Exception {
-        byte[] d = MessageDigest.getInstance("SHA-1").digest(s.getBytes(StandardCharsets.UTF_8));
-        StringBuilder sb = new StringBuilder();
-        for (byte b : d) {
-            sb.append(String.format("%02x", b));
-        }
-        return sb.toString();
-    }
-
-    // ------------------------------------------------------------------ геолокация
-
-    private class Chrome extends WebChromeClient {
-        @Override
-        public void onGeolocationPermissionsShowPrompt(String origin, GeolocationPermissions.Callback callback) {
-            if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
-                    || checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
-                callback.invoke(origin, true, false);
-                return;
-            }
-            geoCallback = callback;
-            geoOrigin = origin;
-            requestPermissions(new String[]{
-                    Manifest.permission.ACCESS_FINE_LOCATION,
-                    Manifest.permission.ACCESS_COARSE_LOCATION}, REQ_LOCATION);
+        public String platform() {
+            return "android";
         }
     }
 }

@@ -1,114 +1,1229 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="ru">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
-<meta name="theme-color" content="#17324D">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>Карта сети</title>
-<link rel="icon" href="icon.svg">
-<link rel="stylesheet" href="vendor/maplibre/maplibre-gl.css?v=1.3">
-<link rel="stylesheet" href="app.css?v=1.3">
+<link rel="stylesheet" href="leaflet/leaflet.css" />
+<script src="leaflet/leaflet.js"></script>
+<style>
+:root {
+  --bg: #f4f6f8;
+  --panel: #fff;
+  --text: #222;
+  --muted: #555;
+  --line: #d0d5dd;
+  --accent: #1565c0;
+  --card: #f0f7ff;
+  --warnbg: #fff8e1;
+}
+body.dark {
+  --bg: #121417;
+  --panel: #1c2128;
+  --text: #e8eaed;
+  --muted: #b0b6be;
+  --line: #343b44;
+  --accent: #64b5f6;
+  --card: #243044;
+  --warnbg: #3a2f14;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+#map { position: absolute; top: 48px; left: 0; right: 0; bottom: 0; background: #c5d5b5; }
+#mapKinds { position: absolute; top: 56px; right: 8px; z-index: 1000; display: flex; flex-direction: column; gap: 4px; }
+#mapKinds button { background: #fff; color: #1565c0; border: 0; border-radius: 6px; padding: 7px 8px; font-size: 12px; font-weight: 700; box-shadow: 0 1px 4px rgba(0,0,0,.35); }
+#mapKinds button.on { background: #1565c0; color: #fff; }
+header {
+  position: absolute; top: 0; left: 0; right: 0; height: 48px; background: #1565c0; color: #fff;
+  display: flex; align-items: center; justify-content: space-between; padding: 0 10px; z-index: 1000; font-weight: 600;
+}
+header button { background: #fff; color: #1565c0; border: none; border-radius: 6px; padding: 4px 8px; font-size: 12px; }
+.panel {
+  position: absolute; left: 0; right: 0; bottom: 0; max-height: 52%; overflow-y: auto;
+  background: var(--panel); color: var(--text); border-top: 1px solid var(--line);
+  padding: 10px; z-index: 1000; transition: transform .2s;
+}
+.panel.hidden { transform: translateY(100%); pointer-events: none; }
+.toggle {
+  position: fixed; right: 12px; bottom: 12px; width: 48px; height: 48px; border-radius: 50%;
+  background: #1565c0; color: #fff; border: none; font-size: 20px; z-index: 1100;
+  box-shadow: 0 2px 8px rgba(0,0,0,.35);
+}
+.row { display: flex; gap: 6px; margin: 6px 0; flex-wrap: wrap; align-items: center; }
+label { font-size: 13px; color: var(--muted); }
+input, select, button { padding: 6px 8px; font-size: 13px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--text); }
+button { background: #1565c0; color: #fff; border: none; }
+button.secondary { background: #607d8b; }
+button.active { background: #c62828; }
+canvas { width: 100%; height: 300px; background: #f7f7f7; border: 1px solid var(--line); border-radius: 6px; margin-top: 6px; }
+body.dark canvas { background: #101418; }
+.info, .card { font-size: 13px; line-height: 1.4; margin: 4px 0; }
+.card { background: var(--card); padding: 8px; border-radius: 6px; }
+.card.warn { background: var(--warnbg); }
+.ok { color: #2e7d32; font-weight: 600; }
+.warn { color: #e65100; font-weight: 600; }
+.bad { color: #c62828; font-weight: 600; }
+.pt { font-size: 12px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; margin: 3px 0; }
+#hist, #modal {
+  display: none; position: fixed; inset: 0; background: rgba(0,0,0,.88); z-index: 2000;
+  align-items: center; justify-content: center;
+}
+#hist.show, #modal.show { display: flex; }
+#histBox { background: var(--panel); color: var(--text); width: 92vw; max-height: 80vh; overflow: auto; border-radius: 10px; padding: 12px; }
+.hist-item { border-bottom: 1px solid var(--line); padding: 8px 0; font-size: 13px; }
+#modal canvas { background: #fff; max-width: 96vw; max-height: 86vh; width: auto; height: auto; }
+header button.on { background: #0d47a1; color: #fff; }
+.off { display: none !important; }
+.leaflet-control-attribution { display: none !important; }
+</style>
 </head>
-<body class="booting">
-
-<div id="map"></div>
-
-<div id="cross" hidden aria-hidden="true"><svg viewBox="0 0 64 64">
-  <circle cx="32" cy="32" r="11" fill="none" stroke="#fff" stroke-width="5"/>
-  <circle cx="32" cy="32" r="11" fill="none" stroke="#0b6bcb" stroke-width="2.5"/>
-  <path d="M32 4v17M32 43v17M4 32h17M43 32h17" stroke="#fff" stroke-width="5" stroke-linecap="round"/>
-  <path d="M32 4v17M32 43v17M4 32h17M43 32h17" stroke="#0b6bcb" stroke-width="2.5" stroke-linecap="round"/>
-  <circle cx="32" cy="32" r="2" style="fill:#0b6bcb"/>
-</svg></div>
-
-<header id="top">
-  <button class="ib" id="btnMenu" data-act="menu" aria-label="Меню">
-    <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
-  </button>
-  <input id="search" type="search" placeholder="Найти узел" autocomplete="off" enterkeyhint="search" aria-label="Поиск узла">
-  <button id="sync" data-act="sync" aria-label="Состояние связи"><i></i><span id="synctext"></span></button>
+<body>
+<header>
+  <span>Линии</span>
+  <span>
+    <button id="tabRadio" class="on" type="button">Радио</button>
+    <button id="tabFiber" type="button">ВОЛС</button>
+    <button id="btnTheme" type="button">Тема</button>
+    <button id="btnHist" type="button">История</button>
+  </span>
 </header>
-
-<div id="mapbtns">
-  <button class="ib" id="btnNorth" data-act="north" hidden aria-label="Повернуть карту севером вверх">
-    <svg viewBox="0 0 24 24" id="needle"><path class="north" d="M12 2.5 16.5 12h-9Z"/><path class="south" d="M12 21.5 7.5 12h9Z"/></svg>
-  </button>
-  <button class="ib" data-act="layer" aria-label="Схема или спутник">
-    <svg viewBox="0 0 24 24"><path d="M12 3 3 8l9 5 9-5-9-5ZM3 12l9 5 9-5M3 16l9 5 9-5"/></svg>
-  </button>
-  <button class="ib" id="btnLocate" data-act="locate" aria-label="Моё местоположение">
-    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="6"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/><circle cx="12" cy="12" r="1.6" class="fill"/></svg>
-  </button>
-  <button class="ib" data-act="fit" aria-label="Показать всю сеть">
-    <svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
-  </button>
+<div id="map"></div>
+<div id="mapKinds">
+  <button id="mapOff" class="on" type="button">Офлайн</button>
+  <button id="mapSat" type="button">Спутник</button>
+  <button id="mapHyb" type="button">Гибрид</button>
 </div>
-
-<div id="fabmenu" hidden>
-  <button data-act="add-link"><svg viewBox="0 0 24 24"><path d="M6 18 18 6"/><circle cx="5" cy="19" r="2.5" class="fill"/><circle cx="19" cy="5" r="2.5" class="fill"/></svg>Линия между узлами</button>
-  <button data-act="add-node"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="5" class="fill"/></svg>Узел</button>
-</div>
-<button id="fab" data-act="fab" hidden aria-label="Добавить">
-  <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
-</button>
-
-<div id="modebar" hidden>
-  <div id="modetext"></div>
-  <div id="modebtns"></div>
-</div>
-
-<aside id="sheet" hidden>
-  <div id="grab" aria-hidden="true"></div>
-  <div id="sheethead">
-    <button class="ib flat" id="sheetback" data-act="back" aria-label="Назад" hidden>
-      <svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg>
-    </button>
-    <h2 id="sheettitle"></h2>
-    <button class="ib flat" data-act="close" aria-label="Закрыть">
-      <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg>
-    </button>
+<button class="toggle" id="toggle" type="button">▲</button>
+<div class="panel" id="panel">
+  <div class="row">
+    <button id="addA" class="secondary" type="button">Точка A</button>
+    <button id="addB" class="secondary" type="button">Точка B</button>
+    <button id="addMore" class="secondary" type="button">Ещё точка</button>
+    <button id="clear" type="button">Очистить</button>
   </div>
-  <div id="sheetbody"></div>
-</aside>
-
-<div id="scrim" data-act="menu-close" hidden></div>
-<nav id="drawer" hidden>
-  <div id="drawerhead">
-    <div id="drawertitle">Карта сети</div>
-    <div id="drawersub"></div>
+  <div class="row">
+    <label><input type="checkbox" id="online"> Онлайн-карты и высоты. Без галочки координаты никуда не уходят</label>
   </div>
-  <button data-act="show" data-view="send" class="phone-only accent">Отправить изменения</button>
-  <button data-act="show" data-view="loadmap" class="phone-only">Загрузить карту</button>
-  <button data-act="show" data-view="importch" class="desk-only accent">Загрузить изменения от бригад</button>
-  <button data-act="show" data-view="exportmap" class="desk-only">Выгрузить карту для бригад</button>
-  <hr>
-  <button data-act="show" data-view="list">Узлы и линии</button>
-  <button data-act="show" data-view="filters">Условные обозначения и фильтр</button>
-  <button data-act="show" data-view="journal">Журнал изменений</button>
-  <button data-act="show" data-view="offline" class="native-only">Карта без интернета</button>
-  <button data-act="show" data-view="types" class="desk-only">Виды узлов, линий и состояния</button>
-  <button data-act="show" data-view="exchange" class="desk-only">Таблицы: CSV и GeoJSON</button>
-  <button data-act="show" data-view="settings">Настройки</button>
-</nav>
-
-
-<div id="hint" hidden>Карта пока пустая. Нажмите <b>+</b>, чтобы поставить первый узел.</div>
-
-<div id="dialog" hidden>
-  <div id="dialogbox" role="alertdialog" aria-modal="true" aria-labelledby="dialogtext">
-    <p id="dialogtext"></p>
-    <div class="actions">
-      <button class="btn" data-act="dialog-cancel">Отмена</button>
-      <button class="btn primary" id="dialogok" data-act="dialog-ok">Да</button>
-    </div>
+  <div id="pointsList" class="info">Точки не выбраны. Нажмите «Точка A» и кликните карту.</div>
+  <div class="row">
+    <label>Высота по умолчанию, м</label>
+    <input id="hDef" type="number" value="15" style="width:70px" min="0">
+    <label>Частота, МГц</label>
+    <input id="freq" type="number" value="5800" style="width:90px" min="100" max="80000">
+    <label>Лес/застройка, м</label>
+    <input id="clutter" type="number" value="0" style="width:64px" min="0" max="80">
   </div>
+  <div class="row">
+    <label>Модель</label>
+    <select id="device">
+      <option value="none">Не выбрано</option>
+      <optgroup label="Ubiquiti">
+        <option value="ns5ac">NanoStation 5AC (16 дБи, ~10 км)</option>
+        <option value="nbe5ac">NanoBeam 5AC Gen2 (19 дБи, ~15 км)</option>
+        <option value="lbe5ac">LiteBeam 5AC Gen2 (23 дБи, ~25 км)</option>
+        <option value="pbe5ac">PowerBeam 5AC Gen2 (25 дБи, ~30 км)</option>
+        <option value="lbe5aclr">LiteBeam 5AC LR (26 дБи, ~35 км)</option>
+        <option value="pbe5aciso">PowerBeam 5AC ISO (25 дБи, ~30 км)</option>
+        <option value="af5x">airFiber 5X + антенна (до ~100 км)</option>
+        <option value="af60">airFiber 60 LR (60 ГГц, до 12 км)</option>
+      </optgroup>
+      <optgroup label="Infinet">
+        <option value="e5st18">InfiLINK Evolution E5-ST18 (18 дБи, до 10 км)</option>
+        <option value="e5st23">InfiLINK Evolution E5-ST23 (23 дБи, до 20 км)</option>
+        <option value="e5st25">InfiLINK Evolution E5-ST25 (25 дБи, до 10 км по бюджету)</option>
+        <option value="e5st28">InfiLINK Evolution E5-ST28 (28 дБи, до 15 км по бюджету)</option>
+        <option value="e5ste">InfiLINK Evolution E5-STE (внешняя антенна)</option>
+        <option value="q518">Quanta 5 Q5-18 (18 дБи, до 20 км)</option>
+        <option value="q523">Quanta 5 Q5-23 (23 дБи, до 40 км)</option>
+        <option value="q525">Quanta 5 Q5-25 (25 дБи)</option>
+        <option value="q528">Quanta 5 Q5-28 (28 дБи)</option>
+        <option value="r500028">InfiLINK 2x2 R5000-Mmx 28 дБи (до 50 км)</option>
+      </optgroup>
+    </select>
+    <button id="autoDev" class="secondary" type="button">Подобрать</button>
+  </div>
+  <div class="row">
+    <label><input type="checkbox" id="f1" checked> Зона 1</label>
+    <label><input type="checkbox" id="f2" checked> Зона 2</label>
+    <label><input type="checkbox" id="f3"> Зона 3</label>
+  </div>
+  <div class="row">
+    <button id="calc" type="button">Рассчитать профиль</button>
+    <button id="png" class="secondary" type="button">PNG</button>
+    <button id="share" class="secondary" type="button">Отправить</button>
+  </div>
+  <div id="info" class="info">Расстояние: —</div>
+  <div id="aim" class="card" style="display:none"></div>
+  <div id="masts" class="card" style="display:none"></div>
+  <div id="budget" class="card" style="display:none"></div>
+  <div id="deviceResult" class="card" style="display:none"></div>
+  <div id="weatherBox" class="card warn" style="display:none"></div>
+  <div id="status" class="info"></div>
+  <canvas id="profile" width="640" height="440"></canvas>
 </div>
+<div class="panel off" id="panelFiber">
+  <b>Паспорт линии</b>
+  <div class="row">
+    <select id="nodeKind">
+      <option value="опора">Опора</option>
+      <option value="муфта">Муфта</option>
+      <option value="узел">Узел</option>
+      <option value="кросс">Кросс</option>
+    </select>
+    <input id="nodeName" placeholder="Номер или имя" style="width:130px">
+    <button id="nodeArm" class="secondary" type="button">Поставить</button>
+    <button id="nodeClear" type="button">Очистить</button>
+  </div>
+  <div id="nodeList" class="info">Выберите тип, нажмите «Поставить» и кликните карту.</div>
+  <div id="nodeSum" class="card" style="display:none"></div>
+  <div class="row">
+    <button id="nodeShare" class="secondary" type="button">Текст паспорта</button>
+  </div>
+  <b>Расчёт ВОЛС, сборка 1.23</b>
+  <div class="info">Сколько кабеля класть, какое затухание и какой SFP ставить.</div>
+  <div class="row">
+    <label>Длина трассы, км</label>
+    <input id="optKm" type="number" value="0" min="0" step="0.01" style="width:80px">
+    <button id="optFromLine" class="secondary" type="button">С карты</button>
+  </div>
+  <div class="row">
+    <label>Пролёт, м</label>
+    <input id="spanM" type="number" value="80" min="1" style="width:64px">
+    <label>Провес, %</label>
+    <input id="sagPct" type="number" value="1.5" min="0" step="0.1" style="width:60px">
+    <label>Пролётов</label>
+    <input id="spanN" type="number" value="0" min="0" style="width:56px" title="0 — посчитать из длины">
+  </div>
+  <div class="row">
+    <label>Запас на опору, м</label>
+    <input id="slackPole" type="number" value="2" min="0" step="0.5" style="width:56px">
+    <label>Муфт</label>
+    <input id="closeN" type="number" value="0" min="0" style="width:52px">
+    <label>× м</label>
+    <input id="slackClose" type="number" value="15" min="0" style="width:52px">
+  </div>
+  <div class="row">
+    <label>Ввод в узел, м</label>
+    <input id="entryM" type="number" value="15" min="0" style="width:56px">
+    <label>с каждого конца</label>
+  </div>
+  <div class="row">
+    <label>Сварки</label>
+    <input id="optSpliceN" type="number" value="2" min="0" style="width:52px">
+    <label>× дБ</label>
+    <input id="optSpliceDb" type="number" value="0.05" min="0" step="0.01" style="width:64px">
+    <label><input type="checkbox" id="optAutoSplice" checked> по муфтам + 2</label>
+  </div>
+  <div class="row">
+    <label>Разъёмы</label>
+    <input id="optConnN" type="number" value="2" min="0" style="width:52px">
+    <label>× дБ</label>
+    <input id="optConnDb" type="number" value="0.4" min="0" step="0.1" style="width:64px">
+    <label>Запас, дБ</label>
+    <input id="optReserve" type="number" value="3" min="0" step="0.5" style="width:56px">
+  </div>
+  <button id="optCalc" type="button">Рассчитать кабель, затухание и SFP</button>
+  <div id="optOut" class="card" style="display:none"></div>
+</div>
+<div id="hist">
+  <button class="x" id="histClose" type="button">&times;</button>
+  <div id="histBox"><b>История профилей</b><div id="histList"></div></div>
+</div>
+<div id="modal">
+  <button class="x" id="modalClose" type="button">&times;</button>
+  <canvas id="modalCanvas" width="1200" height="700"></canvas>
+</div>
+<script>
+const DEVICES = {
+  ns5ac:   { name: "NanoStation 5AC", gain: 16, maxKm: 10, band: 5, freq: "5150–5875", tx: 25, rx: -96, throughput: "450+ Мбит/с", note: "Короткий мост" },
+  nbe5ac:  { name: "NanoBeam 5AC Gen2", gain: 19, maxKm: 15, band: 5, freq: "5150–5875", tx: 25, rx: -96, throughput: "450+ Мбит/с", note: "Средние трассы" },
+  lbe5ac:  { name: "LiteBeam 5AC Gen2", gain: 23, maxKm: 25, band: 5, freq: "5150–5875", tx: 25, rx: -96, throughput: "450+ Мбит/с", note: "Цена/дальность" },
+  pbe5ac:  { name: "PowerBeam 5AC Gen2", gain: 25, maxKm: 30, band: 5, freq: "5150–5875", tx: 24, rx: -96, throughput: "450+ Мбит/с", note: "Узкий луч" },
+  lbe5aclr:{ name: "LiteBeam 5AC LR", gain: 26, maxKm: 35, band: 5, freq: "5150–5875", tx: 25, rx: -96, throughput: "450+ Мбит/с", note: "Дальше LiteBeam" },
+  pbe5aciso:{name: "PowerBeam 5AC ISO", gain: 25, maxKm: 30, band: 5, freq: "5150–5875", tx: 24, rx: -96, throughput: "450+ Мбит/с", note: "Помехозащита" },
+  af5x:    { name: "airFiber 5X + антенна", gain: "антенна", maxKm: 100, band: 5, freq: "5150–5875", tx: 26, rx: -95, throughput: "до 500+ Мбит/с", note: "Для бюджета взято 23 дБи, если антенна другая — запас изменится" },
+  af60:    { name: "airFiber 60 LR", gain: 38, maxKm: 12, band: 60, freq: "57–71 ГГц", throughput: "1+ Гбит/с", note: "Сильно зависит от дождя" },
+  e5st18:  { name: "InfiLINK Evolution E5-ST18", gain: 18, maxKm: 10, stableKm: 3, band: 5, freq: "4900–6050", beam: "18×18°", tx: 25, rx: -90, throughput: "до 670 Мбит/с", note: "E6-ST18 тот же корпус, диапазон 4900–6425. 3 км — дистанция Infinet для высокой модуляции, 10 км — паспорт datasheet" },
+  e5st23:  { name: "InfiLINK Evolution E5-ST23", gain: 23, maxKm: 20, stableKm: 7, band: 5, freq: "4900–6050", beam: "10×10°", tx: 25, rx: -90, throughput: "до 670 Мбит/с", note: "7 км по бюджету канала, до 20 км в datasheet. Канал 20/40/80 МГц" },
+  e5st25:  { name: "InfiLINK Evolution E5-ST25", gain: 25, maxKm: 10, stableKm: 10, band: 5, freq: "4900–6050", beam: "8×8°", tx: 25, rx: -93, throughput: "до 670 Мбит/с", note: "E6-ST25: 4900–6425. Рекомендация Infinet по бюджету канала — до 10 км" },
+  e5st28:  { name: "InfiLINK Evolution E5-ST28", gain: 28, maxKm: 15, stableKm: 15, band: 5, freq: "4900–6050", beam: "5×5°", tx: 25, rx: -93, throughput: "до 670 Мбит/с", note: "E6-ST28: 4900–6425. Бюджет канала до 172 дБ, рекомендация до 15 км" },
+  e5ste:   { name: "InfiLINK Evolution E5-STE", gain: "внешняя", maxKm: 60, stableKm: 30, band: 5, freq: "4900–6050", beam: "зависит от антенны", tx: 25, rx: -93, throughput: "до 670 Мбит/с", note: "2×N-type. E6-STE до 6425 МГц. С большой антенной в руководстве указано 60+ км" },
+  q518:    { name: "Quanta 5 Q5-18", gain: 18, maxKm: 20, stableKm: 12, band: 5, freq: "4900–6000", beam: "18×18°", tx: 27, rx: -101, throughput: "до 650 Мбит/с", note: "SC-FDE, канал до 56 МГц. Чувствительность лучше Evolution" },
+  q523:    { name: "Quanta 5 Q5-23", gain: 23, maxKm: 40, stableKm: 25, band: 5, freq: "4900–6000", beam: "10×10°", tx: 27, rx: -101, throughput: "до 650 Мбит/с", note: "В обзоре Quanta 5 для 23 дБи указано до 40 км" },
+  q525:    { name: "Quanta 5 Q5-25", gain: 25, maxKm: 40, stableKm: 25, band: 5, freq: "4900–6000", beam: "8×8°", tx: 27, rx: -101, throughput: "до 650 Мбит/с", note: "Отдельной цифры дальности для 25 дБи Infinet не публикует. Ориентир — 40 км у Q5-23" },
+  q528:    { name: "Quanta 5 Q5-28", gain: 28, maxKm: 50, stableKm: 35, band: 5, freq: "4900–6000", beam: "5×5°", tx: 27, rx: -101, throughput: "до 650 Мбит/с", note: "Для 28 дБи отдельный километраж не указан. У Q5-23 в обзоре до 40 км, у внешней антенны больше 200 км" },
+  r500028: { name: "InfiLINK 2x2 R5000-Mmx 28 дБи", gain: 28, maxKm: 50, stableKm: 30, band: 5, freq: "4900–6050", beam: "5×5°", tx: 27, rx: -94, throughput: "до 280 Мбит/с", note: "R5000-Mmx/5X.300.2x500.2x28. Модуляция до QAM64, канал до 40 МГц" }
+};
+const ORDER = ["ns5ac","nbe5ac","lbe5ac","pbe5ac","pbe5aciso","lbe5aclr","af5x"];
+const INFINET = ["e5st18","e5st23","e5st25","e5st28","q518","q523","q525","q528","r500028","e5ste"];
 
-<div id="toast" hidden></div>
+const map = L.map("map", { zoomControl: true, attributionControl: false }).setView([46.2, 34.6], 8);
+const offlineTiles = L.tileLayer("https://local.tiles/tiles/{z}/{x}/{y}.png", {
+  minZoom: 7, maxZoom: 11, maxNativeZoom: 11,
+  attribution: "&copy; OpenStreetMap",
+  errorTileUrl: "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"
+});
+const esriUrl = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
+const nameUrl = "https://core-renderer-tiles.maps.yandex.net/tiles?l=skl&x={x}&y={y}&z={z}&scale=1&lang=ru_RU&projection=web_mercator";
+const sat = L.tileLayer(esriUrl, { maxZoom: 19, maxNativeZoom: 19 });
+const hybSat = L.tileLayer(esriUrl, { maxZoom: 19, maxNativeZoom: 19 });
+const hybNames = L.tileLayer(nameUrl, { maxZoom: 19, maxNativeZoom: 19, opacity: 1 });
+const hybrid = L.layerGroup([hybSat, hybNames]);
+offlineTiles.addTo(map);
+function watchTiles(layer) {
+  const tiles = layer.eachLayer ? [] : [layer];
+  if (layer.eachLayer) layer.eachLayer(x => tiles.push(x));
+  let bad = 0;
+  tiles.forEach(t => {
+    if (!t.on) return;
+    t.off("tileerror");
+    t.on("tileerror", () => {
+      bad += 1;
+      if (bad === 4) status("Снимки не пришли. Нужен интернет, галочка «Онлайн» уже включена.");
+    });
+  });
+}
+function useMap(kind) {
+  [offlineTiles, sat, hybrid].forEach(l => { if (map.hasLayer(l)) map.removeLayer(l); });
+  if (kind !== "off" && !online) {
+    document.getElementById("online").checked = true;
+    applyOnline(true);
+  }
+  const layer = kind === "sat" ? sat : (kind === "hyb" ? hybrid : offlineTiles);
+  layer.addTo(map);
+  watchTiles(layer);
+  setTimeout(() => {
+    if (layer.eachLayer) layer.eachLayer(x => { if (x.redraw) x.redraw(); });
+    else if (layer.redraw) layer.redraw();
+    map.invalidateSize();
+  }, 350);
+  document.getElementById("mapOff").classList.toggle("on", kind === "off");
+  document.getElementById("mapSat").classList.toggle("on", kind === "sat");
+  document.getElementById("mapHyb").classList.toggle("on", kind === "hyb");
+  if (kind === "sat") status("Спутник. Нужен интернет.");
+  else if (kind === "hyb") status("Гибрид: снимок и русские названия. Нужен интернет.");
+  else status("Офлайн-карта: Крым, Херсон, Запорожье и Ставрополье, зум 7–11.");
+}
+document.getElementById("mapOff").onclick = () => useMap("off");
+document.getElementById("mapSat").onclick = () => useMap("sat");
+document.getElementById("mapHyb").onclick = () => useMap("hyb");
 
-<script src="vendor/maplibre/maplibre-gl.js?v=1.3"></script>
-<script src="js/core.js?v=1.3"></script>
-<script src="js/mapview.js?v=1.3"></script>
-<script src="js/ui.js?v=1.3"></script>
+let points = [];
+let markers = [];
+let line = null;
+let mode = null;
+let lastProfile = null;
+let online = false;
+
+function status(msg) { document.getElementById("status").textContent = msg || ""; }
+function haversine(lat1, lon1, lat2, lon2) {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+function fresnel(d1, d2, fMHz, D) {
+  if (d1 <= 0 || d2 <= 0 || D <= 0 || fMHz <= 0) return 0;
+  const fGHz = fMHz / 1000;
+  return 17.32 * Math.sqrt((d1 * d2) / (fGHz * D));
+}
+function letter(i) { return String.fromCharCode(65 + i); }
+function toSK42(lat, lon) {
+  const aW = 6378137.0, fW = 1 / 298.257223563;
+  const a = 6378245.0, f = 1 / 298.3;
+  const ecef = geodeticToEcef(lat, lon, aW, fW);
+  const shifted = ecefToGeodetic(ecef[0] - 23.92, ecef[1] + 141.27, ecef[2] + 80.91, a, f);
+  lat = shifted[0];
+  lon = shifted[1];
+  const e2 = 2 * f - f * f;
+  const zone = Math.floor((lon + 6) / 6);
+  const l0 = (zone * 6 - 3) * Math.PI / 180;
+  const B = lat * Math.PI / 180;
+  const l = lon * Math.PI / 180 - l0;
+  const N = a / Math.sqrt(1 - e2 * Math.sin(B) ** 2);
+  const t = Math.tan(B);
+  const eta2 = (e2 / (1 - e2)) * Math.cos(B) ** 2;
+  const e4 = e2 * e2, e6 = e4 * e2;
+  const M = a * ((1 - e2 / 4 - 3 * e4 / 64 - 5 * e6 / 256) * B
+    - (3 * e2 / 8 + 3 * e4 / 32 + 45 * e6 / 1024) * Math.sin(2 * B)
+    + (15 * e4 / 256 + 45 * e6 / 1024) * Math.sin(4 * B)
+    - (35 * e6 / 3072) * Math.sin(6 * B));
+  const c = Math.cos(B);
+  const x = M + N * t * (Math.pow(l, 2) / 2 * c * c
+    + Math.pow(l, 4) / 24 * Math.pow(c, 4) * (5 - t * t + 9 * eta2 + 4 * eta2 * eta2)
+    + Math.pow(l, 6) / 720 * Math.pow(c, 6) * (61 - 58 * t * t + Math.pow(t, 4)));
+  const y = N * (l * c
+    + Math.pow(l, 3) / 6 * Math.pow(c, 3) * (1 - t * t + eta2)
+    + Math.pow(l, 5) / 120 * Math.pow(c, 5) * (5 - 18 * t * t + Math.pow(t, 4)));
+  return { x: Math.round(x), y: Math.round(zone * 1000000 + 500000 + y), zone: zone };
+}
+function geodeticToEcef(lat, lon, a, f) {
+  const b = a * (1 - f);
+  const e2 = (a * a - b * b) / (a * a);
+  const B = lat * Math.PI / 180, L = lon * Math.PI / 180;
+  const N = a / Math.sqrt(1 - e2 * Math.sin(B) * Math.sin(B));
+  return [
+    N * Math.cos(B) * Math.cos(L),
+    N * Math.cos(B) * Math.sin(L),
+    N * (1 - e2) * Math.sin(B)
+  ];
+}
+function ecefToGeodetic(x, y, z, a, f) {
+  const b = a * (1 - f);
+  const e2 = (a * a - b * b) / (a * a);
+  const ep2 = (a * a - b * b) / (b * b);
+  const p = Math.sqrt(x * x + y * y);
+  const th = Math.atan2(z * a, p * b);
+  const B = Math.atan2(z + ep2 * b * Math.pow(Math.sin(th), 3), p - e2 * a * Math.pow(Math.cos(th), 3));
+  const L = Math.atan2(y, x);
+  return [B * 180 / Math.PI, L * 180 / Math.PI];
+}
+function along(lat1, lon1, lat2, lon2, t) {
+  const p1 = lat1 * Math.PI / 180, l1 = lon1 * Math.PI / 180;
+  const p2 = lat2 * Math.PI / 180, l2 = lon2 * Math.PI / 180;
+  const d = 2 * Math.asin(Math.min(1, Math.sqrt(
+    Math.sin((p2 - p1) / 2) ** 2 + Math.cos(p1) * Math.cos(p2) * Math.sin((l2 - l1) / 2) ** 2
+  )));
+  if (d < 1e-8) return { lat: lat1, lng: lon1 };
+  const A = Math.sin((1 - t) * d) / Math.sin(d);
+  const B = Math.sin(t * d) / Math.sin(d);
+  const x = A * Math.cos(p1) * Math.cos(l1) + B * Math.cos(p2) * Math.cos(l2);
+  const y = A * Math.cos(p1) * Math.sin(l1) + B * Math.cos(p2) * Math.sin(l2);
+  const z = A * Math.sin(p1) + B * Math.sin(p2);
+  return { lat: Math.atan2(z, Math.sqrt(x * x + y * y)) * 180 / Math.PI, lng: Math.atan2(y, x) * 180 / Math.PI };
+}
+function longestHop() {
+  let m = 0;
+  for (let i = 1; i < points.length; i++) m = Math.max(m, haversine(points[i - 1].lat, points[i - 1].lng, points[i].lat, points[i].lng));
+  return m;
+}
+function pathLength() {
+  let d = 0;
+  for (let i = 1; i < points.length; i++) d += haversine(points[i - 1].lat, points[i - 1].lng, points[i].lat, points[i].lng);
+  return d;
+}
+function setMode(m, btn) {
+  mode = m;
+  ["addA", "addB", "addMore"].forEach(id => document.getElementById(id).classList.remove("active"));
+  if (btn) document.getElementById(btn).classList.add("active");
+  const names = { A: "A", B: "B", more: "следующую" };
+  status("Кликните карту, чтобы поставить точку " + (names[m] || ""));
+}
+function renderPoints() {
+  const el = document.getElementById("pointsList");
+  if (!points.length) {
+    el.textContent = "Точки не выбраны. Нажмите «Точка A» и кликните карту.";
+    return;
+  }
+  el.innerHTML = points.map((p, i) => {
+    const sk = toSK42(p.lat, p.lng);
+    return `<div class="pt"><b>${letter(i)}</b> ${p.lat.toFixed(5)}, ${p.lng.toFixed(5)}<br>
+      SK-42: X=${sk.x} Y=${sk.y} зона ${sk.zone}
+      <span style="float:right">h <input data-i="${i}" class="hpt" type="number" value="${p.height}" style="width:64px"> м
+      <button type="button" data-del="${i}" class="secondary" style="padding:2px 6px">×</button></span></div>`;
+  }).join("");
+  el.querySelectorAll(".hpt").forEach(inp => {
+    inp.onchange = () => { points[+inp.dataset.i].height = parseFloat(inp.value) || 0; saveSession(); };
+  });
+  el.querySelectorAll("[data-del]").forEach(b => {
+    b.onclick = () => { points.splice(+b.dataset.del, 1); redrawMap(); saveSession(); };
+  });
+}
+function iconFor(i) {
+  const color = i === 0 ? "#c62828" : (i === points.length - 1 ? "#1565c0" : "#6a1b9a");
+  return L.divIcon({
+    className: "",
+    html: `<div style="background:${color};color:#fff;border:2px solid #fff;border-radius:12px;min-width:22px;height:22px;line-height:18px;text-align:center;font-weight:700;font-size:12px;box-shadow:0 1px 4px rgba(0,0,0,.4)">${letter(i)}</div>`,
+    iconSize: [22, 22], iconAnchor: [11, 11]
+  });
+}
+function redrawMap() {
+  markers.forEach(m => map.removeLayer(m));
+  markers = [];
+  if (line) { map.removeLayer(line); line = null; }
+  points.forEach((p, i) => {
+    const m = L.marker([p.lat, p.lng], { icon: iconFor(i) }).addTo(map);
+    const sk = toSK42(p.lat, p.lng);
+    m.bindPopup(`${letter(i)}<br>${p.lat.toFixed(5)}, ${p.lng.toFixed(5)}<br>SK-42 X=${sk.x} Y=${sk.y}`);
+    markers.push(m);
+  });
+  if (points.length >= 2) {
+    line = L.polyline(points.map(p => [p.lat, p.lng]), { color: "#1565c0", weight: 3 }).addTo(map);
+    const d = pathLength();
+    let html = `Расстояние: <b>${d.toFixed(2)} км</b>`;
+    if (points.length > 2) {
+      for (let i = 1; i < points.length; i++) {
+        const hop = haversine(points[i - 1].lat, points[i - 1].lng, points[i].lat, points[i].lng);
+        html += `<br>${letter(i - 1)}–${letter(i)}: ${hop.toFixed(2)} км`;
+      }
+    }
+    document.getElementById("info").innerHTML = html;
+  } else {
+    document.getElementById("info").textContent = "Расстояние: —";
+  }
+  renderPoints();
+}
+function place(latlng) {
+  const h = parseFloat(document.getElementById("hDef").value) || 15;
+  const p = { lat: latlng.lat, lng: latlng.lng, height: h };
+  if (mode === "A") {
+    if (points.length === 0) points.push(p); else points[0] = Object.assign(points[0], p);
+  } else if (mode === "B") {
+    if (points.length === 0) { status("Сначала поставьте точку A"); return; }
+    if (points.length === 1) points.push(p); else points[1] = Object.assign(points[1], p);
+  } else if (mode === "more") {
+    if (points.length < 2) { status("Сначала поставьте A и B"); return; }
+    points.push(p);
+  } else {
+    status("Сначала выберите кнопку точки");
+    return;
+  }
+  mode = null;
+  ["addA", "addB", "addMore"].forEach(id => document.getElementById(id).classList.remove("active"));
+  redrawMap();
+  saveSession();
+  status("Точка поставлена");
+}
+function saveSession() {
+  try {
+    localStorage.setItem("wf_session", JSON.stringify({
+      points: points,
+      freq: document.getElementById("freq").value,
+      clutter: document.getElementById("clutter").value,
+      hDef: document.getElementById("hDef").value,
+      device: document.getElementById("device").value
+    }));
+  } catch (e) { /* память телефона могла запретить запись */ }
+}
+function restoreSession() {
+  try {
+    const raw = localStorage.getItem("wf_session");
+    if (!raw) return;
+    const s = JSON.parse(raw);
+    if (!s || !Array.isArray(s.points)) return;
+    points = s.points.filter(p => p && isFinite(p.lat) && isFinite(p.lng));
+    points.forEach(p => { if (!isFinite(p.height)) p.height = 15; });
+    if (s.freq) document.getElementById("freq").value = s.freq;
+    if (s.clutter != null) document.getElementById("clutter").value = s.clutter;
+    if (s.hDef) document.getElementById("hDef").value = s.hDef;
+    if (s.device && document.querySelector('#device option[value="' + s.device + '"]')) document.getElementById("device").value = s.device;
+    redrawMap();
+    if (points.length >= 2) map.fitBounds(points.map(p => [p.lat, p.lng]), { padding: [28, 28] });
+  } catch (e) { /* старая сессия битая — начинаем пустыми */ }
+}
+map.on("click", e => {
+  if (fiberMode && armNode) addNode(e.latlng);
+  else if (!fiberMode && mode) place(e.latlng);
+});
+map.on("zoomend", () => {
+  if (map.hasLayer(offlineTiles) && map.getZoom() > 11) status("Офлайн-карта до зума 11. Дальше включите онлайн-слой.");
+});
+
+document.getElementById("addA").onclick = () => setMode("A", "addA");
+document.getElementById("addB").onclick = () => setMode("B", "addB");
+document.getElementById("addMore").onclick = () => setMode("more", "addMore");
+document.getElementById("clear").onclick = () => {
+  points = []; lastProfile = null; redrawMap(); saveSession();
+  ["deviceResult", "weatherBox", "aim", "masts", "budget"].forEach(id => {
+    const n = document.getElementById(id);
+    if (n) n.style.display = "none";
+  });
+  const c = document.getElementById("profile");
+  c.getContext("2d").clearRect(0, 0, c.width, c.height);
+  status("Очищено");
+};
+document.getElementById("toggle").onclick = () => {
+  const panels = [document.getElementById("panel"), document.getElementById("panelFiber")];
+  const hide = !panels[0].classList.contains("hidden");
+  panels.forEach(p => p.classList.toggle("hidden", hide));
+  document.getElementById("toggle").textContent = hide ? "▲" : "▼";
+  setTimeout(() => map.invalidateSize(), 220);
+};
+document.getElementById("btnTheme").onclick = () => {
+  document.body.classList.toggle("dark");
+  localStorage.setItem("wf_theme", document.body.classList.contains("dark") ? "dark" : "light");
+};
+if (localStorage.getItem("wf_theme") === "dark") document.body.classList.add("dark");
+
+function showDevice(id, distKm, report) {
+  const box = document.getElementById("deviceResult");
+  const dev = DEVICES[id];
+  if (!dev) { box.style.display = "none"; return; }
+  let verdict, cls;
+  if (report && report.state === "unknown") {
+    verdict = "Высоты не загрузились — про модель судить нельзя";
+    cls = "warn";
+  } else if (report && report.state === "blocked") {
+    verdict = "Рельеф закрывает 60% зоны Френеля. На этой трассе мост работать не будет";
+    cls = "bad";
+  } else if (report && report.state === "tight") {
+    verdict = "Зона почти касается земли. В дождь связь будет плохой";
+    cls = "warn";
+  } else if (distKm > dev.maxKm) {
+    verdict = "Дальше рекомендуемой дистанции этой модели";
+    cls = "bad";
+  } else if (dev.stableKm && distKm > dev.stableKm) {
+    verdict = "Дальше дистанции для высокой модуляции: линк может встать, скорость будет ниже паспорта";
+    cls = "warn";
+  } else if (distKm > dev.maxKm * 0.7) {
+    verdict = "По рельефу зона свободна, но дальность на пределе модели";
+    cls = "warn";
+  } else {
+    verdict = "Зона свободна, модель по дальности подходит";
+    cls = "ok";
+  }
+  box.style.display = "block";
+  box.innerHTML = `<b>${dev.name}</b><br>Усиление: ${dev.gain} дБи${dev.beam ? ", луч " + dev.beam : ""}<br>${dev.tx ? "TX до " + dev.tx + " дБм, RX до " + dev.rx + " дБм<br>" : ""}Диапазон ${dev.freq} МГц · ${dev.throughput}<br>Рекомендуемая дистанция до ${dev.maxKm} км${dev.stableKm ? ", высокая модуляция до " + dev.stableKm + " км" : ""}<br><span class="${cls}">${verdict}</span><br><small>${dev.note || ""}</small>`;
+}
+function autoDevice() {
+  if (points.length < 2) { status("Нужны минимум две точки"); return; }
+  const hops = [];
+  for (let i = 1; i < points.length; i++) hops.push(haversine(points[i - 1].lat, points[i - 1].lng, points[i].lat, points[i].lng));
+  const longest = Math.max.apply(null, hops);
+  const f = parseFloat(document.getElementById("freq").value) || 5800;
+  const cur = document.getElementById("device").value;
+  let pool = INFINET.indexOf(cur) >= 0 ? INFINET.slice() : ORDER.slice();
+  if (cur === "none") pool = ORDER.concat(INFINET).sort((a, b) => DEVICES[a].maxKm - DEVICES[b].maxKm);
+  if (f >= 50000) pool = ["af60"];
+  const need = longest * 1.25;
+  let pick = pool[pool.length - 1];
+  for (let i = 0; i < pool.length; i++) {
+    if (DEVICES[pool[i]].maxKm >= need) { pick = pool[i]; break; }
+  }
+  document.getElementById("device").value = pick;
+  if (f >= 50000) document.getElementById("freq").value = 60000;
+  showDevice(pick, longest);
+  status("Подобран " + DEVICES[pick].name + " на самый длинный пролёт " + longest.toFixed(2) + " км");
+}
+document.getElementById("autoDev").onclick = autoDevice;
+document.getElementById("device").onchange = () => {
+  if (points.length >= 2) showDevice(document.getElementById("device").value, longestHop(), lastProfile && lastProfile.report);
+};
+
+async function fetchElev(samples) {
+  const out = new Array(samples.length).fill(null);
+  let ok = 0;
+  let source = "";
+  const chunk = 80;
+  for (let start = 0; start < samples.length; start += chunk) {
+    const part = samples.slice(start, start + chunk);
+    const loc = part.map(p => p.lat.toFixed(5) + "," + p.lng.toFixed(5)).join("|");
+    try {
+      let data = null;
+      if (window.AndroidBridge && AndroidBridge.fetchElevations) {
+        data = JSON.parse(AndroidBridge.fetchElevations(loc));
+      } else if (online) {
+        const res = await fetch("https://api.opentopodata.org/v1/srtm90m?locations=" + encodeURIComponent(loc));
+        data = await res.json();
+      }
+      if (data && data.status === "OK" && data.results && data.results.length) {
+        data.results.forEach((r, i) => {
+          if (r && typeof r.elevation === "number") { out[start + i] = r.elevation; ok++; }
+        });
+        if (data.source) source = data.source;
+      }
+    } catch (e) { /* next chunk */ }
+  }
+  const filled = out.map(v => (typeof v === "number" ? v : null));
+  const known = filled.filter(v => typeof v === "number");
+  return { values: filled.map(v => (typeof v === "number" ? v : 0)), ok: known.length === samples.length, source: source };
+}
+
+function buildSamples() {
+  const samples = [];
+  const hops = [];
+  let acc = 0;
+  for (let s = 0; s < points.length - 1; s++) {
+    const a = points[s], b = points[s + 1];
+    const D = haversine(a.lat, a.lng, b.lat, b.lng);
+    const n = Math.max(40, Math.min(160, Math.round(D * 12)));
+    for (let i = 0; i < n; i++) {
+      const t = i / n;
+      const g = along(a.lat, a.lng, b.lat, b.lng, t);
+      samples.push({
+        lat: g.lat,
+        lng: g.lng,
+        dist: acc + D * t,
+        hop: s,
+        t: t
+      });
+    }
+    hops.push({ D: D, start: acc, hA: a.height, hB: b.height, a: a, b: b });
+    acc += D;
+  }
+  const last = points[points.length - 1];
+  samples.push({ lat: last.lat, lng: last.lng, dist: acc, hop: points.length - 2, t: 1 });
+  return { samples: samples, hops: hops, total: acc };
+}
+
+function setupCanvas(c, modal) {
+  const dpr = 2;
+  const cssW = modal ? Math.min(window.innerWidth - 16, 1100) : Math.max(300, c.clientWidth || (window.innerWidth - 24));
+  const cssH = modal ? Math.min(window.innerHeight - 40, 720) : 300;
+  c.width = Math.floor(cssW * dpr);
+  c.height = Math.floor(cssH * dpr);
+  if (modal) { c.style.width = cssW + "px"; c.style.height = cssH + "px"; }
+  else { c.style.width = "100%"; c.style.height = "300px"; }
+  return { w: c.width, h: c.height, dpr: dpr };
+}
+
+function geometry(profile) {
+  const samples = profile.samples;
+  const elev = profile.elev;
+  const hops = profile.hops;
+  const f = profile.f;
+  const K = 4 / 3;
+  const endElev = [];
+  hops.forEach((hop, hi) => {
+    const first = samples.findIndex(p => p.hop === hi && p.t === 0);
+    const lastIdx = hi === hops.length - 1 ? samples.length - 1 : samples.findIndex(p => p.hop === hi + 1 && p.t === 0);
+    endElev[hi] = { a: elev[Math.max(0, first)] + hop.hA, b: elev[Math.max(0, lastIdx)] + hop.hB };
+  });
+  const clutter = profile.clutter || 0;
+  const terrain = samples.map((s, i) => {
+    const hop = hops[s.hop];
+    const d1 = s.t * hop.D;
+    const d2 = hop.D - d1;
+    return (elev[i] || 0) + (d1 * d2) / (2 * K * 6.371) + clutter;
+  });
+  const los = samples.map(s => {
+    const e = endElev[s.hop];
+    return e.a + (e.b - e.a) * s.t;
+  });
+  function rad(s, factor) {
+    const hop = hops[s.hop];
+    const d1 = s.t * hop.D;
+    const d2 = (1 - s.t) * hop.D;
+    if (d1 < 0.002 || d2 < 0.002) return 0;
+    return fresnel(d1, d2, f, hop.D) * factor;
+  }
+  let worst = { margin: Infinity, dist: 0, clearance: 0, need: 0, r1: 0 };
+  samples.forEach((s, i) => {
+    const r1 = rad(s, 1);
+    const need = 0.6 * r1;
+    const clearance = los[i] - terrain[i];
+    const margin = clearance - need;
+    if (r1 > 0.2 && margin < worst.margin) worst = { margin: margin, dist: s.dist, clearance: clearance, need: need, r1: r1 };
+  });
+  let state = "ok";
+  if (!profile.elevOk) state = "unknown";
+  else if (!(worst.margin < Infinity)) state = "unknown";
+  else if (worst.margin < 0) state = "blocked";
+  else if (worst.margin < 2) state = "tight";
+  const raises = hops.map((hop, hi) => {
+    let onlyA = 0, onlyB = 0, both = 0;
+    samples.forEach((s, i) => {
+      if (s.hop !== hi) return;
+      const deficit = 0.6 * rad(s, 1) - (los[i] - terrain[i]);
+      if (deficit <= 0) return;
+      both = Math.max(both, deficit);
+      if (s.t < 0.98) onlyA = Math.max(onlyA, deficit / (1 - s.t));
+      if (s.t > 0.02) onlyB = Math.max(onlyB, deficit / s.t);
+    });
+    return { onlyA: onlyA, onlyB: onlyB, both: both };
+  });
+  return { terrain: terrain, los: los, endElev: endElev, rad: rad, worst: worst, state: state, raises: raises };
+}
+
+function draw(profile, target) {
+  const c = target || document.getElementById("profile");
+  const ctx = c.getContext("2d");
+  const modal = !!target;
+  const dim = setupCanvas(c, modal);
+  const w = dim.w, h = dim.h;
+  const g = geometry(profile);
+  profile.report = { state: g.state, worst: g.worst, raises: g.raises };
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, w, h);
+  const samples = profile.samples;
+  const hops = profile.hops;
+  const total = profile.total || 0.001;
+  let shown = g.terrain.slice();
+  for (let pass = 0; pass < 2; pass++) {
+    const next = shown.slice();
+    for (let i = 2; i < shown.length - 2; i++) {
+      next[i] = (shown[i - 2] + 4 * shown[i - 1] + 6 * shown[i] + 4 * shown[i + 1] + shown[i + 2]) / 16;
+    }
+    shown = next;
+  }
+  shown[0] = g.terrain[0];
+  shown[shown.length - 1] = g.terrain[g.terrain.length - 1];
+  let maxR = 1;
+  samples.forEach(s => { const r = g.rad(s, Math.sqrt(3)); if (r > maxR) maxR = r; });
+  let minE = Infinity, maxE = -Infinity;
+  shown.forEach((v, i) => {
+    minE = Math.min(minE, v, g.los[i] - g.rad(samples[i], Math.sqrt(3)));
+    maxE = Math.max(maxE, v, g.los[i] + g.rad(samples[i], Math.sqrt(3)));
+  });
+  if (!(maxE > minE)) { minE = 0; maxE = 80; }
+  const padM = Math.max(6, (maxE - minE) * 0.08);
+  minE -= padM;
+  maxE += padM;
+  const padL = 46, padR = 16, padT = 36, padB = 16;
+  const xOf = dist => padL + (dist / total) * (w - padL - padR);
+  const yOf = e => h - padB - ((e - minE) / (maxE - minE)) * (h - padT - padB);
+
+  function trace(ys) {
+    ctx.beginPath();
+    ctx.moveTo(xOf(samples[0].dist), ys[0]);
+    for (let i = 1; i < samples.length; i++) ctx.lineTo(xOf(samples[i].dist), ys[i]);
+  }
+
+  function zone(factor, stroke, fill, width, dash) {
+    ctx.beginPath();
+    samples.forEach((s, i) => {
+      const xx = xOf(s.dist);
+      const yy = yOf(g.los[i] + g.rad(s, factor));
+      if (i === 0) ctx.moveTo(xx, yy); else ctx.lineTo(xx, yy);
+    });
+    for (let i = samples.length - 1; i >= 0; i--) {
+      ctx.lineTo(xOf(samples[i].dist), yOf(g.los[i] - g.rad(samples[i], factor)));
+    }
+    ctx.closePath();
+    if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+    ctx.setLineDash(dash || []);
+    ctx.strokeStyle = stroke;
+    ctx.lineWidth = width;
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  if (document.getElementById("f3").checked) zone(Math.sqrt(3), "#0d47a1", "rgba(21,101,192,0.18)", modal ? 2.2 : 1.6, [3, 4]);
+  if (document.getElementById("f2").checked) zone(Math.sqrt(2), "#1b5e20", "rgba(67,160,71,0.18)", modal ? 2.4 : 1.7, [8, 4]);
+  if (document.getElementById("f1").checked) zone(1, "#ef6c00", "rgba(255,167,38,0.45)", modal ? 3 : 2.3, []);
+  zone(0.6, "#b71c1c", "rgba(229,57,53,0.22)", modal ? 2.6 : 2, [9, 5]);
+
+  const ground = shown.map(e => yOf(Math.max(minE, e)));
+  trace(ground);
+  ctx.lineTo(xOf(samples[samples.length - 1].dist), h - padB);
+  ctx.lineTo(xOf(samples[0].dist), h - padB);
+  ctx.closePath();
+  const grad = ctx.createLinearGradient(0, padT, 0, h);
+  grad.addColorStop(0, "#c5e1a5");
+  grad.addColorStop(1, "#7cb342");
+  ctx.fillStyle = grad;
+  ctx.fill();
+  trace(ground);
+  ctx.strokeStyle = "#33691e";
+  ctx.lineWidth = modal ? 2.4 : 1.8;
+  ctx.stroke();
+  ctx.beginPath();
+  let pen = false;
+  for (let i = 0; i < samples.length; i++) {
+    const bad = (g.los[i] - g.terrain[i]) < 0.6 * g.rad(samples[i], 1) && g.rad(samples[i], 1) > 0.2;
+    if (!bad) { pen = false; continue; }
+    const xx = xOf(samples[i].dist), yy = yOf(shown[i]);
+    if (!pen) ctx.moveTo(xx, yy); else ctx.lineTo(xx, yy);
+    pen = true;
+  }
+  ctx.strokeStyle = "#c62828";
+  ctx.lineWidth = modal ? 4 : 3;
+  ctx.stroke();
+
+  if (document.getElementById("f1").checked) zone(1, "#e65100", null, modal ? 3 : 2.4, []);
+  zone(0.6, "#b71c1c", null, modal ? 2.6 : 2.1, [9, 5]);
+  if (document.getElementById("f2").checked) zone(Math.sqrt(2), "#2e7d32", null, modal ? 2.2 : 1.7, [8, 4]);
+  if (document.getElementById("f3").checked) zone(Math.sqrt(3), "#0d47a1", null, modal ? 2 : 1.5, [3, 4]);
+
+  trace(g.los.map(e => yOf(e)));
+  ctx.strokeStyle = "#d50000";
+  ctx.lineWidth = modal ? 2.6 : 2;
+  ctx.setLineDash([]);
+  ctx.stroke();
+
+  const mid = Math.max(2, Math.floor(samples.length * 0.18));
+  const tx = xOf(samples[mid].dist) + 2;
+  ctx.font = "bold " + (modal ? 14 : 11) + "px sans-serif";
+  ctx.textAlign = "left";
+  [["F3", Math.sqrt(3), "#0d47a1", "f3"], ["F2", Math.sqrt(2), "#1b5e20", "f2"], ["F1", 1, "#e65100", "f1"], ["60%", 0.6, "#b71c1c", ""]].forEach(tag => {
+    if (tag[3] && !document.getElementById(tag[3]).checked) return;
+    ctx.fillStyle = tag[2];
+    ctx.fillText(tag[0], tx, yOf(g.los[mid] + g.rad(samples[mid], tag[1])) + 3);
+  });
+
+  ctx.textAlign = "left";
+  ctx.fillStyle = g.state === "ok" ? "#1b5e20" : "#b71c1c";
+  ctx.font = "bold " + (modal ? 20 : 13) + "px sans-serif";
+  const title = g.state === "blocked" ? "НЕ ПРОЙДЁТ: рельеф в 60% зоны" : (g.state === "tight" ? "НА ПРЕДЕЛЕ" : (g.state === "unknown" ? "НЕТ ВЫСОТ" : "ПРОЙДЁТ: 60% зоны свободны"));
+  ctx.fillText(title, 8, 16);
+  ctx.fillStyle = "#555";
+  ctx.font = (modal ? 14 : 11) + "px sans-serif";
+  ctx.fillText("Рельеф SRTM и кривизна земли. Красным отмечено, где земля входит в 60% зоны.", 8, 30);
+  ctx.fillStyle = "#666";
+  ctx.font = (modal ? 13 : 10) + "px sans-serif";
+  ctx.fillText(Math.round(maxE) + " м", 4, padT + 12);
+  ctx.fillText(Math.round(minE) + " м", 4, h - 4);
+  points.forEach((p, i) => {
+    const dist = i === 0 ? 0 : hops.slice(0, i).reduce((sum, hop) => sum + hop.D, 0);
+    const alt = i === 0 ? g.endElev[0].a : g.endElev[i - 1].b;
+    ctx.fillStyle = "#222";
+    ctx.font = "bold " + (modal ? 16 : 13) + "px sans-serif";
+    ctx.fillText(letter(i), xOf(dist) + 2, yOf(alt) - 8);
+  });
+}
+
+async function calc() {
+  status("Нажато…");
+  if (points.length < 2) { status("Поставьте минимум точки A и B"); return; }
+  const f = parseFloat(document.getElementById("freq").value);
+  if (!(f > 0)) { status("Укажите частоту больше нуля"); return; }
+  const built = buildSamples();
+  if (built.total < 0.02) { status("Точки слишком близко"); return; }
+  status("Загрузка высот…");
+  let pack;
+  try { pack = await fetchElev(built.samples); }
+  catch (e) { pack = { values: built.samples.map(() => 0), ok: false, source: "" }; }
+  const clutter = parseFloat(document.getElementById("clutter").value) || 0;
+  const profile = { samples: built.samples, hops: built.hops, total: built.total, elev: pack.values, elevOk: pack.ok, f: f, clutter: clutter, points: JSON.parse(JSON.stringify(points)) };
+  lastProfile = profile;
+  try {
+    draw(profile);
+  } catch (e) {
+    status("Ошибка графика: " + e.message);
+    return;
+  }
+  const report = profile.report || { state: "unknown", worst: { margin: 0, dist: 0, clearance: 0, need: 0 } };
+  const longest = Math.max.apply(null, built.hops.map(h => h.D));
+  const dev = document.getElementById("device").value;
+  if (dev !== "none") showDevice(dev, longest, report);
+  showWeather(longest, f, report);
+  showAim();
+  showMasts(report, clutter);
+  showBudget(longest, f, dev);
+  saveHist(profile, longest);
+  saveSession();
+  const w = report.worst || {};
+  const src = pack.source === "offline" ? "Рельеф офлайн SRTM. " : (pack.ok ? "Рельеф онлайн. " : "");
+  if (!pack.ok) status(online ? "Высоты не загрузились. Без рельефа нельзя решать, будет ли связь." : "Высот вне офлайн-карты нет: онлайн выключен, координаты не отправляются.");
+  else if (report.state === "blocked") status(src + "Не пройдёт. На " + w.dist.toFixed(2) + " км просвет " + w.clearance.toFixed(1) + " м, нужно " + w.need.toFixed(1) + " м (60% F1).");
+  else if (report.state === "tight") status(src + "На пределе: запас над 60% зоны всего " + w.margin.toFixed(1) + " м.");
+  else status(src + "Пройдёт: 60% первой зоны свободны, запас " + w.margin.toFixed(1) + " м.");
+}
+
+function bearing(lat1, lon1, lat2, lon2) {
+  const p1 = lat1 * Math.PI / 180, p2 = lat2 * Math.PI / 180, dl = (lon2 - lon1) * Math.PI / 180;
+  const y = Math.sin(dl) * Math.cos(p2);
+  const x = Math.cos(p1) * Math.sin(p2) - Math.sin(p1) * Math.cos(p2) * Math.cos(dl);
+  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+}
+function declination(lat, lon) {
+  return Math.round((7.2 + (lon - 30) * 0.18 + (lat - 45) * 0.12) * 10) / 10;
+}
+function fmtAz(deg) { return deg.toFixed(1) + "°"; }
+function showAim() {
+  const box = document.getElementById("aim");
+  if (points.length < 2) { box.style.display = "none"; return; }
+  let html = "<b>Юстировка</b><br>";
+  for (let i = 1; i < points.length; i++) {
+    const a = points[i - 1], b = points[i];
+    const ab = bearing(a.lat, a.lng, b.lat, b.lng);
+    const ba = bearing(b.lat, b.lng, a.lat, a.lng);
+    const dec = declination((a.lat + b.lat) / 2, (a.lng + b.lng) / 2);
+    html += `${letter(i - 1)}→${letter(i)}: истинный ${fmtAz(ab)}, магнитный ${fmtAz((ab - dec + 360) % 360)}<br>`;
+    html += `${letter(i)}→${letter(i - 1)}: истинный ${fmtAz(ba)}, магнитный ${fmtAz((ba - dec + 360) % 360)}<br>`;
+    html += `<small>Склонение около ${dec}° к востоку, оценка 2026, погрешность ~1°.</small><br>`;
+  }
+  box.style.display = "block";
+  box.innerHTML = html;
+}
+function showMasts(report, clutter) {
+  const box = document.getElementById("masts");
+  const raises = (report && report.raises) || [];
+  if (!raises.length || report.state === "unknown") { box.style.display = "none"; return; }
+  let html = "<b>Подъём мачт до свободных 60% F1</b>";
+  if (clutter > 0) html += `<br>Уже учтён запас на лес/застройку ${clutter} м`;
+  raises.forEach((r, i) => {
+    if (r.both < 0.2) {
+      html += `<br>${letter(i)}–${letter(i + 1)}: поднимать не нужно`;
+      return;
+    }
+    const a = r.onlyA > 150 ? "только " + letter(i) + " не спасёт" : "только " + letter(i) + " +" + r.onlyA.toFixed(1) + " м";
+    const b = r.onlyB > 150 ? "только " + letter(i + 1) + " не спасёт" : "только " + letter(i + 1) + " +" + r.onlyB.toFixed(1) + " м";
+    html += `<br>${letter(i)}–${letter(i + 1)}: обе +${r.both.toFixed(1)} м, либо ${a}, либо ${b}`;
+  });
+  box.style.display = "block";
+  box.innerHTML = html;
+}
+function showBudget(D, fMHz, devId) {
+  const box = document.getElementById("budget");
+  const dev = DEVICES[devId];
+  if (!dev) { box.style.display = "none"; return; }
+  const gainA = typeof dev.gain === "number" ? dev.gain : 23;
+  const gainB = gainA;
+  const tx = dev.tx || 25;
+  const rx = dev.rx || -90;
+  const fspl = 32.44 + 20 * Math.log10(fMHz) + 20 * Math.log10(Math.max(D, 0.01));
+  const rain = Math.max(0, D * 0.8 * (fMHz / 5800));
+  const pr = tx + gainA + gainB - fspl;
+  const margin = pr - rx;
+  const marginRain = margin - rain;
+  const cls = marginRain >= 15 ? "ok" : (marginRain >= 5 ? "warn" : "bad");
+  box.style.display = "block";
+  box.innerHTML = `<b>Бюджет канала</b><br>FSPL ${fspl.toFixed(1)} дБ на ${D.toFixed(2)} км<br>TX ${tx} дБм + ${gainA}+${gainB} дБи → на приёме ${pr.toFixed(1)} дБм<br>Чувствительность ${rx} дБм<br><span class="${cls}">Запас ${margin.toFixed(1)} дБ, в ливень ${marginRain.toFixed(1)} дБ</span><br><small>Ниже 15 дБ в дождь связь ненадёжна. Для внешней антенны усиление в расчёте 23 дБи, если не задано числом. ${dev.note || ""}</small>`;
+}
+
+function showWeather(D, fMHz, report) {
+  const box = document.getElementById("weatherBox");
+  const k = fMHz / 5800;
+  const rain5 = Math.max(0, Math.round(D * 0.15 * k));
+  const rain25 = Math.max(0, Math.round(D * 0.8 * k));
+  const snow = Math.max(0, Math.round(D * 0.3 * k));
+  const fog = Math.max(0, Math.round(D * 0.05 * k));
+  const extra = (report && report.state === "blocked")
+    ? `<div class="bad">Погода это не спасёт: трассу закрывает рельеф.</div>`
+    : (fMHz > 10000
+      ? `<div class="bad">60 ГГц: сильный дождь может оборвать линк.</div>`
+      : `<div>Дождь добавляет потери сверху, даже если зона чистая.</div>`);
+  box.style.display = "block";
+  box.innerHTML = `<b>Погода, доп. затухание (оценка)</b><br>Дождь 5 мм/ч: ~${rain5} дБ<br>Ливень 25 мм/ч: ~${rain25} дБ<br>Снег: ~${snow} дБ<br>Туман: ~${fog} дБ<br>${extra}`;
+}
+
+function saveHist(profile, longest) {
+  const item = {
+    t: Date.now(),
+    freq: profile.f,
+    dist: longest,
+    clutter: profile.clutter || 0,
+    points: profile.points
+  };
+  let arr = [];
+  try { arr = JSON.parse(localStorage.getItem("wf_hist") || "[]"); } catch (e) { arr = []; }
+  arr.unshift(item);
+  localStorage.setItem("wf_hist", JSON.stringify(arr.slice(0, 25)));
+}
+function openHist() {
+  const box = document.getElementById("histList");
+  let arr = [];
+  try { arr = JSON.parse(localStorage.getItem("wf_hist") || "[]"); } catch (e) { arr = []; }
+  if (!arr.length) box.innerHTML = "<p>Пока пусто. Рассчитайте профиль.</p>";
+  else box.innerHTML = arr.map((it, i) => {
+    const when = new Date(it.t).toLocaleString();
+    const names = (it.points || []).map(p => p.lat.toFixed(4) + "," + p.lng.toFixed(4)).join(" → ");
+    return `<div class="hist-item">${when}<br>${(it.dist || 0).toFixed(2)} км · ${it.freq} МГц<br><small>${names}</small><br><button type="button" data-h="${i}">Открыть</button></div>`;
+  }).join("");
+  box.querySelectorAll("[data-h]").forEach(b => {
+    b.onclick = () => {
+      const it = arr[+b.dataset.h];
+      points = it.points.map(p => ({ lat: +p.lat, lng: +p.lng, height: isFinite(+p.height) ? +p.height : 15 }));
+      document.getElementById("freq").value = it.freq;
+      if (it.clutter != null) document.getElementById("clutter").value = it.clutter;
+      redrawMap();
+      saveSession();
+      document.getElementById("hist").classList.remove("show");
+      if (points.length >= 2 && line) map.fitBounds(line.getBounds(), { padding: [30, 30] });
+      calc();
+    };
+  });
+  document.getElementById("hist").classList.add("show");
+}
+document.getElementById("btnHist").onclick = openHist;
+document.getElementById("histClose").onclick = () => document.getElementById("hist").classList.remove("show");
+document.getElementById("calc").onclick = () => { calc(); };
+document.getElementById("profile").onclick = () => {
+  if (!lastProfile) { status("Сначала рассчитайте профиль"); return; }
+  document.getElementById("modal").classList.add("show");
+  draw(lastProfile, document.getElementById("modalCanvas"));
+};
+document.getElementById("modalClose").onclick = () => document.getElementById("modal").classList.remove("show");
+document.getElementById("png").onclick = () => {
+  if (!lastProfile) { status("Сначала рассчитайте профиль"); return; }
+  draw(lastProfile);
+  const url = document.getElementById("profile").toDataURL("image/png");
+  if (window.AndroidBridge && AndroidBridge.saveImage) {
+    const r = AndroidBridge.saveImage(url);
+    status(String(r).indexOf("OK") === 0 ? "PNG сохранён в Загрузки" : ("Не сохранилось: " + r));
+  } else {
+    const a = document.createElement("a");
+    a.href = url; a.download = "fresnel.png"; a.click();
+    status("PNG скачан");
+  }
+};
+document.getElementById("share").onclick = () => {
+  if (points.length < 2) return;
+  const lines = points.map((p, i) => {
+    const sk = toSK42(p.lat, p.lng);
+    return letter(i) + ": " + p.lat.toFixed(6) + ", " + p.lng.toFixed(6) + " h=" + p.height + "м SK-42 X=" + sk.x + " Y=" + sk.y;
+  });
+  const text = "Профиль радиолинка\n" + lines.join("\n") + "\nЧастота: " + document.getElementById("freq").value + " МГц\nМодель: " + document.getElementById("device").selectedOptions[0].text;
+  window.location.href = "mailto:?subject=" + encodeURIComponent("Профиль радиолинка") + "&body=" + encodeURIComponent(text);
+};
+setTimeout(() => map.invalidateSize(), 400);
+function applyOnline(on) {
+  online = !!on;
+  localStorage.setItem("wf_online", online ? "1" : "0");
+  if (window.AndroidBridge && AndroidBridge.setOnline) AndroidBridge.setOnline(online);
+  if (!online && !map.hasLayer(offlineTiles)) offlineTiles.addTo(map);
+}
+document.getElementById("online").checked = localStorage.getItem("wf_online") === "1";
+document.getElementById("online").onchange = () => applyOnline(document.getElementById("online").checked);
+applyOnline(document.getElementById("online").checked);
+restoreSession();
+let fiberMode = false;
+let armNode = false;
+let nodes = [];
+let nodeMarkers = [];
+let nodeLine = null;
+const SFP = {
+  g3:  { name: "SFP 1G 3 км", speed: "1 Гбит/с", wave: "1310", tx: -9, rx: -20, km: 3 },
+  lx:  { name: "SFP 1G LX 10 км", speed: "1 Гбит/с", wave: "1310", tx: -9.5, rx: -20, km: 10 },
+  g20: { name: "SFP 1G 20 км", speed: "1 Гбит/с", wave: "1310", tx: -8, rx: -23, km: 20 },
+  ex:  { name: "SFP 1G EX 40 км", speed: "1 Гбит/с", wave: "1310", tx: -5, rx: -23, km: 40 },
+  zx:  { name: "SFP 1G ZX 80 км", speed: "1 Гбит/с", wave: "1550", tx: 0, rx: -24, km: 80 },
+  g120:{ name: "SFP 1G 120 км", speed: "1 Гбит/с", wave: "1550", tx: 0, rx: -31, km: 120 },
+  lr:  { name: "SFP+ 10G LR 10 км", speed: "10 Гбит/с", wave: "1310", tx: -8.2, rx: -14.4, km: 10 },
+  er:  { name: "SFP+ 10G ER 40 км", speed: "10 Гбит/с", wave: "1550", tx: -4.7, rx: -15.8, km: 40 },
+  zr:  { name: "SFP+ 10G ZR 80 км", speed: "10 Гбит/с", wave: "1550", tx: 0, rx: -24, km: 80 }
+};
+function setTool(which) {
+  fiberMode = which === "fiber";
+  document.getElementById("panel").classList.toggle("off", fiberMode);
+  document.getElementById("panelFiber").classList.toggle("off", !fiberMode);
+  document.getElementById("tabRadio").classList.toggle("on", !fiberMode);
+  document.getElementById("tabFiber").classList.toggle("on", fiberMode);
+  try { localStorage.setItem("wf_tool", which); } catch (e) {}
+  if (fiberMode) {
+    markers.forEach(m => map.removeLayer(m));
+    if (line) map.removeLayer(line);
+    drawNodes();
+  } else {
+    nodeMarkers.forEach(m => map.removeLayer(m));
+    if (nodeLine) { map.removeLayer(nodeLine); nodeLine = null; }
+    redrawMap();
+  }
+  setTimeout(() => map.invalidateSize(), 200);
+}
+function nodeLength() {
+  let d = 0;
+  for (let i = 1; i < nodes.length; i++) d += haversine(nodes[i - 1].lat, nodes[i - 1].lng, nodes[i].lat, nodes[i].lng);
+  return d;
+}
+function saveNodes() { try { localStorage.setItem("wf_nodes", JSON.stringify(nodes)); } catch (e) {} }
+function drawNodes() {
+  nodeMarkers.forEach(m => map.removeLayer(m));
+  nodeMarkers = [];
+  if (nodeLine) { map.removeLayer(nodeLine); nodeLine = null; }
+  const colors = { "опора": "#6d4c41", "муфта": "#ef6c00", "узел": "#1565c0", "кросс": "#2e7d32" };
+  nodes.forEach((p, i) => {
+    const m = L.marker([p.lat, p.lng], { icon: L.divIcon({
+      className: "",
+      html: `<div style="background:${colors[p.kind] || "#333"};color:#fff;border:2px solid #fff;border-radius:10px;padding:0 4px;height:20px;line-height:16px;font-size:11px;font-weight:700">${i + 1}</div>`,
+      iconSize: [22, 20], iconAnchor: [11, 10]
+    }) }).addTo(map);
+    const sk = toSK42(p.lat, p.lng);
+    m.bindPopup(`${p.kind} ${p.name || ""}<br>SK-42 X=${sk.x} Y=${sk.y}`);
+    nodeMarkers.push(m);
+  });
+  if (nodes.length >= 2) nodeLine = L.polyline(nodes.map(p => [p.lat, p.lng]), { color: "#ef6c00", weight: 3 }).addTo(map);
+  const el = document.getElementById("nodeList");
+  if (!nodes.length) {
+    el.textContent = "Выберите тип, нажмите «Поставить» и кликните карту.";
+    document.getElementById("nodeSum").style.display = "none";
+    return;
+  }
+  el.innerHTML = nodes.map((p, i) => {
+    const sk = toSK42(p.lat, p.lng);
+    return `<div class="pt"><b>${i + 1}. ${p.kind}</b> ${p.name || ""}<br>SK-42 X=${sk.x} Y=${sk.y} <button type="button" data-nd="${i}" class="secondary" style="padding:2px 6px">×</button></div>`;
+  }).join("");
+  el.querySelectorAll("[data-nd]").forEach(b => { b.onclick = () => { nodes.splice(+b.dataset.nd, 1); saveNodes(); drawNodes(); }; });
+  const box = document.getElementById("nodeSum");
+  box.style.display = "block";
+  box.innerHTML = nodes.length >= 2 ? `Длина по точкам: <b>${nodeLength().toFixed(2)} км</b>` : "Для длины нужна вторая точка.";
+}
+function addNode(latlng) {
+  nodes.push({ lat: latlng.lat, lng: latlng.lng, kind: document.getElementById("nodeKind").value, name: document.getElementById("nodeName").value.trim() });
+  armNode = false;
+  document.getElementById("nodeArm").classList.remove("active");
+  saveNodes();
+  drawNodes();
+  status("Точка линии поставлена");
+}
+function fiberLoss(km, wave, splice, conn, reserve) {
+  const att = wave === "1550" ? 0.22 : 0.35;
+  const fiber = km * att;
+  return { att: att, fiber: fiber, loss: fiber + splice + conn + reserve };
+}
+function rankSfp(speed, km, splice, conn, reserve) {
+  return Object.keys(SFP).map(id => SFP[id]).filter(s => s.speed === speed).map(s => {
+    const part = fiberLoss(km, s.wave, splice, conn, reserve);
+    const pr = s.tx - part.loss;
+    const margin = pr - s.rx;
+    const over = km > s.km + 0.05;
+    return { s: s, pr: pr, margin: margin, over: over, ok: margin >= 0 && !over, fiber: part.fiber, loss: part.loss };
+  }).sort((a, b) => a.s.km - b.s.km);
+}
+function calcLine() {
+  const km = Math.max(0, parseFloat(document.getElementById("optKm").value) || 0);
+  if (km <= 0) { status("Укажите длину трассы или возьмите её с карты"); return; }
+  const spanM = Math.max(1, parseFloat(document.getElementById("spanM").value) || 80);
+  let spans = parseFloat(document.getElementById("spanN").value) || 0;
+  const routeM = km * 1000;
+  if (spans <= 0) spans = Math.max(1, Math.round(routeM / spanM));
+  document.getElementById("spanN").value = String(spans);
+  const sag = parseFloat(document.getElementById("sagPct").value) || 0;
+  const pole = parseFloat(document.getElementById("slackPole").value) || 0;
+  const closeM = parseFloat(document.getElementById("slackClose").value) || 0;
+  const closeN = parseFloat(document.getElementById("closeN").value) || 0;
+  const entry = parseFloat(document.getElementById("entryM").value) || 0;
+  if (document.getElementById("optAutoSplice").checked) document.getElementById("optSpliceN").value = String(closeN + 2);
+  const splice = (parseFloat(document.getElementById("optSpliceN").value) || 0) * (parseFloat(document.getElementById("optSpliceDb").value) || 0);
+  const conn = (parseFloat(document.getElementById("optConnN").value) || 0) * (parseFloat(document.getElementById("optConnDb").value) || 0);
+  const reserve = parseFloat(document.getElementById("optReserve").value) || 0;
+  const wire = routeM * (1 + sag / 100);
+  const poles = (spans + 1) * pole;
+  const closures = closeN * closeM;
+  const total = wire + poles + closures + entry * 2;
+  const at1310 = fiberLoss(km, "1310", splice, conn, reserve);
+  const at1550 = fiberLoss(km, "1550", splice, conn, reserve);
+  function line(rows) {
+    const best = rows.find(r => r.ok);
+    if (best) return `<span class="ok">Ставить ${best.s.name}</span> (${best.s.wave} нм). Запас ${best.margin.toFixed(1)} дБ, на приёме ${best.pr.toFixed(1)} дБм.`;
+    const least = rows.slice().sort((a, b) => b.margin - a.margin)[0];
+    return `<span class="bad">${least.s.name} не хватает ${Math.abs(least.margin).toFixed(1)} дБ</span>${least.over ? ", длина больше паспорта модуля" : ""}.`;
+  }
+  const box = document.getElementById("optOut");
+  box.style.display = "block";
+  box.innerHTML =
+    `<b>Кабель к прокладке: ${Math.ceil(total)} м</b><br>` +
+    `Трасса ${Math.round(routeM)} м, провес ${(wire - routeM).toFixed(0)} м, опоры ${poles.toFixed(0)} м, муфты ${closures.toFixed(0)} м, вводы ${(entry * 2).toFixed(0)} м. Пролётов ${spans}.<br><br>` +
+    `<b>Затухание</b><br>1310 нм: ${at1310.loss.toFixed(2)} дБ (волокно ${at1310.fiber.toFixed(2)} + сварки ${splice.toFixed(2)} + разъёмы ${conn.toFixed(2)} + запас ${reserve.toFixed(1)})<br>` +
+    `1550 нм: ${at1550.loss.toFixed(2)} дБ (волокно ${at1550.fiber.toFixed(2)} + те же сварки, разъёмы и запас)<br><br>` +
+    `<b>1 Гбит/с.</b> ${line(rankSfp("1 Гбит/с", km, splice, conn, reserve))}<br>` +
+    `<b>10 Гбит/с.</b> ${line(rankSfp("10 Гбит/с", km, splice, conn, reserve))}<br>` +
+    `<small>Мощность передатчика взята минимальная. Модуль короче трассы не предлагается. Это оценка, не проект.</small>`;
+  status("Расчёт ВОЛС готов");
+}
+function initFiber() {
+  try { nodes = JSON.parse(localStorage.getItem("wf_nodes") || "[]"); } catch (e) { nodes = []; }
+  document.getElementById("tabRadio").onclick = () => setTool("radio");
+  document.getElementById("tabFiber").onclick = () => setTool("fiber");
+  document.getElementById("nodeArm").onclick = () => { armNode = true; document.getElementById("nodeArm").classList.add("active"); status("Кликните карту, чтобы поставить точку линии"); };
+  document.getElementById("nodeClear").onclick = () => { nodes = []; saveNodes(); drawNodes(); };
+  document.getElementById("optFromLine").onclick = () => {
+    const km = nodeLength();
+    if (km <= 0) { status("Сначала поставьте точки линии"); return; }
+    document.getElementById("optKm").value = km.toFixed(2);
+    const closures = nodes.filter(x => x.kind === "муфта").length;
+    document.getElementById("closeN").value = String(closures);
+    const n = nodes.length - 1;
+    document.getElementById("spanN").value = String(n);
+    document.getElementById("spanM").value = String(Math.max(1, Math.round(km * 1000 / n)));
+  };
+  document.getElementById("optCalc").onclick = calcLine;
+  document.getElementById("nodeShare").onclick = () => {
+    if (!nodes.length) return;
+    const lines = nodes.map((p, i) => {
+      const sk = toSK42(p.lat, p.lng);
+      return (i + 1) + ". " + p.kind + " " + (p.name || "") + " SK-42 X=" + sk.x + " Y=" + sk.y;
+    });
+    window.location.href = "mailto:?subject=" + encodeURIComponent("Паспорт линии") + "&body=" + encodeURIComponent(lines.join("\n"));
+  };
+}
+initFiber();
+status("Офлайн-карта и высоты: Крым, Херсон, Запорожье и Ставрополье, зум карты 7–11.");
+</script>
+<script src="exchange.js"></script>
 </body>
 </html>
