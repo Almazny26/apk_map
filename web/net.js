@@ -233,7 +233,7 @@
     '#netDlgBox .nm-row button{padding:8px 14px;font-size:14px}',
     '#netDlgBox .nm-j{border-bottom:1px solid var(--line);padding:6px 0;font-size:13px}',
     '#netDlgBox .nm-j small{color:var(--muted)}',
-    '@media (max-width:460px){header>span:first-child{display:none}header>span:last-child{display:flex;gap:4px;width:100%;justify-content:space-between}header button{padding:5px 6px}}'
+    ''
   ].join('\n');
   document.head.appendChild(css);
 
@@ -616,8 +616,7 @@
         // ВОЛС сохраняется сама; кнопка — название и примечание
         $(x[1]).textContent = 'Название…';
         $(x[1]).style.display = o ? '' : 'none';
-        lbl.innerHTML = o ? 'Линия: <b>' + esc(o.f.name || '') + '</b> · ' + km(o.f.dist) + ' · сохраняется сама' :
-          'Новая линия: «Ставить точки» и нажимайте по трассе; на узле линия закончится.';
+        lbl.innerHTML = o ? 'Линия: <b>' + esc(o.f.name || '') + '</b> · ' + km(o.f.dist) + ' · сохраняется сама' : '';
         return;
       }
       $(x[1]).textContent = o ? 'Сохранить изменения' : 'Сохранить в сеть';
@@ -699,6 +698,7 @@
   window.drawNodes = function () {
     var r = drawNodesOrig.apply(this, arguments);
     clearMids();
+    if (!nodes.length) $('nodeList').textContent = 'Точек пока нет. «Ставить точки» и нажимайте по трассе — или начните от узла: нажмите на узел → «ВОЛС по точкам».';
     nodeMarkers.forEach(function (m, i) {
       if (!m.dragging) return;
       m.dragging.enable();
@@ -1028,7 +1028,7 @@
     var el = $('netList');
     if (!list.length) {
       el.innerHTML = '<div class="nm-muted">' + (alive().length ? 'Ничего не найдено.' :
-        'Пока пусто. «Добавить узел» — и нажмите на карту. Радиолинию или линию ВОЛС сохраните кнопкой «Сохранить в сеть» во вкладке «Радио» или «ВОЛС».') + '</div>';
+        'Пока пусто. 1) «Добавить узел» и нажмите на карту. 2) Соедините узлы: нажмите на узел → «ВОЛС до узла» или «Радиолиния до узла».') + '</div>';
       return;
     }
     el.innerHTML = list.slice(0, 300).map(function (o) {

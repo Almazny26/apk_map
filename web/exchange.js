@@ -151,7 +151,7 @@
     '#kartaExBox .kx-warn{background:var(--warnbg);border-radius:8px;padding:8px 10px;margin:8px 0}' +
     '.kx-t{border-collapse:collapse;width:100%;margin:4px 0}.kx-t td{padding:4px 6px 4px 0;border-bottom:1px solid var(--line);vertical-align:top}' +
     '.kx-t td:first-child{color:var(--muted);width:42%}' +
-    '#kartaEx .x{position:absolute;top:10px;right:14px;background:none;border:0;color:#fff;font-size:30px}';
+    '#kartaEx>.x{display:none}';
   document.head.appendChild(css);
 
   var wrap = document.createElement('div');
@@ -170,7 +170,7 @@
   var note = '';        // сообщение после действия
 
   function render() {
-    var html = '<b>Обмен данными</b>';
+    var html = '<div class="kx-head"><b>Обмен данными</b><button type="button" class="kx-close" data-kx="close" title="Закрыть">&#10005;</button></div>';
     if (note) html += '<div class="kx-msg">' + note + '</div>';
     if (pending) {
       html += '<h3>Загрузить данные из файла?</h3>' +

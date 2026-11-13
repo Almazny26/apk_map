@@ -35,8 +35,6 @@
     '#sheet .panel{position:static;max-height:none;overflow:visible;border:0;transform:none;transition:none;padding:0 14px 14px;background:transparent}',
     '#sheet .panel.off{display:none}',
     '#sheet .panel>b:first-child{display:none}',
-    '#sheet .panel button{padding:8px 11px;font-size:14px}',
-    '#sheet .panel input,#sheet .panel select{padding:7px 8px;font-size:14px}',
     '#sheet #status:empty{display:none}',
     '#sheet #status{background:var(--card);border-radius:8px;padding:6px 8px}',
     '.leaflet-bottom{transition:bottom .28s cubic-bezier(.2,.8,.2,1);bottom:var(--sheet-h,0px)}',
@@ -71,7 +69,7 @@
     document.body.style.setProperty('--sheet-h', (h - offset) + 'px');
     // карточки на карте не прячутся под шторку
     L.Popup.prototype.options.autoPanPaddingBottomRight = L.point(10, h - offset + 12);
-    L.Popup.prototype.options.autoPanPaddingTopLeft = L.point(10, 12);
+    L.Popup.prototype.options.autoPanPaddingTopLeft = L.point(62, 12);   // слева кнопки карты
   }
   function go(name, noSave) {
     pos = name;

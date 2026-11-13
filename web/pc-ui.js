@@ -28,8 +28,6 @@
     'body.pc button:active{filter:brightness(.92)}',
     'body.pc input:focus,body.pc select:focus{outline:2px solid var(--accent);outline-offset:-1px}',
     'body.pc header{user-select:none}',
-    'body.pc header>span:last-child{display:flex;gap:6px;align-items:center}',
-    'body.pc header button{padding:6px 12px;font-size:13px;font-weight:600}',
     'body.pc #map{bottom:' + STATUS + 'px}',
     'body.pc #toggle,body.pc #modal{display:none!important}',
     'body.pc #mapKinds{top:' + (HEADER + 10) + 'px;right:10px}',
@@ -92,7 +90,7 @@
     '#hist.pcw.show,#kartaEx.pcw.show{display:flex}',
     '#hist.pcw .x,#kartaEx.pcw>.pcw-body>.x{display:none}',
     '#hist.pcw #histBox,#kartaEx.pcw #kartaExBox{width:auto;max-width:none;max-height:none;overflow:visible;border-radius:0;padding:10px 14px}',
-    '#hist.pcw #histBox>b:first-child{display:none}',
+    '#hist.pcw #histBox>b:first-child,#hist.pcw .ui-dlg-head,#kartaEx.pcw .kx-head{display:none}',
     '#hist.pcw .hist-item button{margin-top:4px}',
 
     // окно с текстом
