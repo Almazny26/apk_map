@@ -95,6 +95,20 @@
 
   // ---------------------------------------------------------------- поворот двумя пальцами — не сразу
 
+  /* leaflet-rotate 0.6 вызывает _onZoomTransitionEnd на каждом движении пальцев
+   * через _animateZoomNoDelay. Это запускает zoomend/moveend посреди жеста:
+   * карта перегружает плитки, а схема перестраивает маркеры. Сам _onTouchMove
+   * уже применяет дробный масштаб через _move(..., {pinch:true, round:false}).
+   * Оставляем этот кадр, завершение и привязку масштаба — штатному _onTouchEnd. */
+  (function () {
+    var frame = map._animateZoomNoDelay;
+    if (!frame) return;
+    map._animateZoomNoDelay = function () {
+      if (this.touchGestures && this.touchGestures._gesture === 'pinch') return;
+      return frame.apply(this, arguments);
+    };
+  })();
+
   /* Плагин поворачивает карту при любом движении двух пальцев, и обычное изменение масштаба чуть
    * сбивало север. Теперь поворот начинается, только когда пальцы провернулись больше чем на 10°
    * (как в привычных картах); до этого меняется один масштаб. */
@@ -122,8 +136,9 @@
 
   /* Выключателя «Карта из интернета» больше нет (заказчик, 3.3): есть связь — карта грузится, нет —
    * показывается загруженное. Флажок приложения товарища просто всегда включён. */
-  $('online').checked = true;
-  if (!online) applyOnline(true);
+  var offlineOnly = !!window.KartaOfflineOnly;
+  $('online').checked = !offlineOnly;
+  if (online !== !offlineOnly) applyOnline(!offlineOnly);
 
   // ---------------------------------------------------------------- офлайн-карта районов (MapLibre GL)
 
@@ -141,8 +156,8 @@
   }
 
   var kf = window.KartaFiles, bridge = !!(kf && kf.mapTile);
-  var gl = null, info = { files: [] }, key = '', schema = 'auto', glOk = null;
-  var current = localStorage.getItem(KIND) || 'off';      // вид карты: off — схема, sat — спутник, hyb — гибрид
+  var gl = null, info = { files: [] }, infoLoaded = false, key = '', schema = 'auto', glOk = null;
+  var current = window.KartaPC ? 'off' : localStorage.getItem(KIND) || 'off'; // ПК — только схема; Android сохраняет выбор подложки.
   function webgl() {
     if (glOk == null) {
       try {
@@ -212,17 +227,19 @@
   }
   var HYB = { minor: .35, major: .5, hw: .6 };          // дороги схемы поверх снимков — полупрозрачные
   function style() {
-    var s = JSON.parse(JSON.stringify(window.KartaStyle[document.body.classList.contains('dark') ? 'dark' : 'light']));
-    var vec = hasVec(), img = hasSat() && current !== 'off', all = s.layers;
+    var theme = document.body.classList.contains('dark') ? 'dark' : 'light';
+    var palette = richStyle() ? window.KartaStylePC : window.KartaStyle;
+    var s = JSON.parse(JSON.stringify(palette[theme]));
+    var cur = shown(), vec = hasVec(), img = hasSat() && cur !== 'off', all = s.layers;
     s.glyphs = bridge ? 'karta://f/{fontstack}/{range}' : location.origin + '/vendor/fonts/{fontstack}/{range}.pbf';
     s.sources.p.tiles = [bridge ? 'karta://t/{z}/{x}/{y}?' + key : location.origin + '/omap/{z}/{x}/{y}.mvt?v=' + key];
-    if (vec) s.sources.p.bounds = union(files('map'));
+    if (vec) { s.sources.p.bounds = union(files('map')); s.sources.p.maxzoom = Math.max.apply(null,files('map').map(function (f) { return f.maxzoom || 15; })); }
     else { delete s.sources.p; all = []; }
     if (img) {
-      s.sources.s = { type: 'raster', tileSize: 256, minzoom: 0, maxzoom: 14, bounds: union(files('sat')),
+      s.sources.s = { type: 'raster', tileSize: 256, minzoom: 0, maxzoom: Math.max.apply(null,files('sat').map(function (f) { return f.maxzoom || 14; })), bounds: union(files('sat')),
         tiles: [bridge ? 'karta://s/{z}/{x}/{y}?' + key : location.origin + '/osat/{z}/{x}/{y}.jpg?v=' + key] };
       // «Гибрид»: поверх снимков — дороги и подписи схемы; «Спутник»: только снимки
-      all = current === 'hyb' ? all.filter(function (l) { return l.type === 'symbol' || HYB[l.id]; }) : [];
+      all = cur === 'hyb' ? all.filter(function (l) { return l.type === 'symbol' || HYB[l.id]; }) : [];
       all.forEach(function (l) {
         if (HYB[l.id]) { l.paint = l.paint || {}; l.paint['line-opacity'] = HYB[l.id]; }
         if (l.type === 'symbol') { l.paint = l.paint || {}; l.paint['text-halo-width'] = 1.8; }
@@ -230,11 +247,37 @@
       all.unshift({ id: 'sat', type: 'raster', source: 's', paint: { 'raster-fade-duration': 0 } });
     }
     s.layers = all;
+    if (richStyle() && window.KartaCoverage) {
+      s.sources.coverage = {type:'geojson',data:{type:'Feature',properties:{},geometry:KartaCoverage.mask},tolerance:0};
+      s.layers.push({id:'coverage-mask',type:'fill',source:'coverage',paint:{'fill-color':theme === 'dark' ? '#171a1f' : '#e4e2dd','fill-antialias':false}});
+    }
     return s;
+  }
+  /* Схема левобережья с подробными слоями (та же, что на ПК): на ПК и в приложении со вшитой картой */
+  function richStyle() { return !!window.KartaStylePC && (!!window.KartaPC || info.files.some(function (f) { return f.builtin; })); }
+  /* Связь: есть — подложки из интернета; нет — только офлайн-схема (и загруженные снимки районов),
+   * без ожидания плиток, которые всё равно не придут. Оболочка сообщает о смене сети сама. */
+  var netUp = true;
+  try { netUp = kf && kf.networkUp ? !!kf.networkUp() : navigator.onLine !== false; } catch (e) { netUp = true; }
+  function shown() { return netUp || hasSat() ? current : 'off'; }
+  function setNet(up) {
+    up = !!up;
+    if (up === netUp) return;
+    netUp = up;
+    if (!window.KartaPC && current !== 'off' && !hasSat()) KartaMap.note(up ? 'Связь появилась — снимки снова загружаются' : 'Нет связи — показана офлайн-схема');
+    kindsUi();
+    sync();
+    if (window.KartaApp && KartaApp.mapChanged) KartaApp.mapChanged();
+  }
+  window.__kartaNet = setNet;
+  window.addEventListener('online', function () { if (!(kf && kf.networkUp)) setNet(true); });
+  window.addEventListener('offline', function () { if (!(kf && kf.networkUp)) setNet(false); });
+  function kindsUi() {
+    ['mapSat', 'mapHyb'].forEach(function (id) { var b = $(id); if (b) b.classList.toggle('dis', !netUp && !hasSat()); });
   }
   var styled = '';
   function restyle() {
-    var k = current + (document.body.classList.contains('dark') ? 'd' : 'l');
+    var k = shown() + (document.body.classList.contains('dark') ? 'd' : 'l');
     if (!gl || k === styled) return;
     styled = k;
     try { gl.setStyle(style()); } catch (e) { /* карта ещё не готова */ }
@@ -245,7 +288,7 @@
       try { files = JSON.parse(kf.mapList()) || []; } catch (e) { files = []; }
       cb({ files: files });
     } else if (window.KartaPC) {
-      fetch('/api/map').then(function (r) { return r.json(); }).then(function (st) { cb({ files: st.files || [] }); }, function () { cb({ files: [] }); });
+      fetch('/api/map').then(function (r) { return r.json(); }).then(function (st) { cb({ files: (st.files || []).filter(function (f) { return f.kind !== 'sat'; }) }); }, function () { cb({ files: [] }); });
     } else cb({ files: [] });
   }
   /* Слой офлайн-карты — карта MapLibre в неподвижном блоке под всеми слоями Leaflet. Она повторяет
@@ -269,7 +312,8 @@
       glDiv.className = 'karta-gl';
       var mc = map.getContainer();
       mc.insertBefore(glDiv, mc.firstChild);
-      map.on('move zoom rotate', follow);
+      // Leaflet emits both zoom and move for a single pinch frame.
+      map.on('move rotate', follow);
       map.on('resize', function () { if (gl) { gl.resize(); follow(); } });
       map.on('zoomanim', function (e) {
         if (!gl || glDiv.style.display === 'none') return;
@@ -279,7 +323,7 @@
       map.on('zoomend', function () { zooming = false; if (gl) gl.stop(); follow(); });
     }
     var c = map.getCenter();
-    styled = current + (document.body.classList.contains('dark') ? 'd' : 'l');
+    styled = shown() + (document.body.classList.contains('dark') ? 'd' : 'l');
     return new maplibregl.Map({ container: glDiv, style: style(), center: [c.lng, c.lat], zoom: map.getZoom() - 1, bearing: bearing(),
       interactive: false, attributionControl: false, fadeDuration: 0, validateStyle: false, maxZoom: 22, renderWorldCopies: false,
       pixelRatio: Math.min(window.devicePixelRatio || 1, 2) });
@@ -294,6 +338,8 @@
     readInfo(function (i) {
       var k = i.files.map(function (f) { return f.slug + '.' + f.size + '.' + f.mtime; }).join('_').replace(/[^0-9A-Za-z_.]/g, '');
       info = i;
+      infoLoaded = true;
+      kindsUi();
       if (k !== key || (!gl && i.files.length)) {
         key = k;
         if (gl) { try { gl.remove(); } catch (e) { /* уже убрана */ } gl = null; }
@@ -307,7 +353,7 @@
   }
   /* центр экрана внутри района, для которого есть офлайн-карта */
   function covered() {
-    if (!gl || map.getZoom() < 7) return false;
+    if (!gl || (!offlineOnly && map.getZoom() < 7)) return false;
     var c = map.getCenter();
     return files('map').some(function (f) { return inBox(f, c.lat, c.lng); });
   }
@@ -317,29 +363,65 @@
     if (on && !has) { l.addTo(map); if (watch && typeof watchTiles === 'function') watchTiles(l); }
     else if (!on && has) map.removeLayer(l);
   }
+  var coverageNotice = null;
+  function insideCoverage(lat, lng) {
+    if (!window.KartaCoverage) return true;
+    var area = KartaCoverage.area, polys = area.type === 'Polygon' ? [area.coordinates] : area.coordinates;
+    function ring(points) {
+      var inside = false;
+      for (var i = 0, j = points.length - 1; i < points.length; j = i++) {
+        var a = points[i], b = points[j];
+        if ((a[1] > lat) !== (b[1] > lat) && lng < (b[0] - a[0]) * (lat - a[1]) / (b[1] - a[1]) + a[0]) inside = !inside;
+      }
+      return inside;
+    }
+    return polys.some(function (poly) { return ring(poly[0]) && !poly.slice(1).some(ring); });
+  }
+  function showCoverageNotice() {
+    if (!window.KartaPC || !infoLoaded) return;
+    if (!coverageNotice) {
+      coverageNotice = document.createElement('button'); coverageNotice.type = 'button'; coverageNotice.id = 'mapCoverageNotice';
+      map.getContainer().appendChild(coverageNotice);
+      L.DomEvent.disableClickPropagation(coverageNotice); L.DomEvent.disableScrollPropagation(coverageNotice);
+      coverageNotice.onclick = function () {
+        var b = window.KartaCoverage && KartaCoverage.bounds;
+        if (b) map.fitBounds([[b[1],b[0]],[b[3],b[2]]],{padding:[40,40]});
+      };
+    }
+    var c = map.getCenter(), outside = !insideCoverage(c.lat,c.lng);
+    coverageNotice.hidden = !!gl && !outside;
+    coverageNotice.disabled = !gl;
+    coverageNotice.textContent = !hasVec() ? 'Файл схемы не найден. Перенесите папку map вместе с программой.' : !gl ?
+      'Карта не отрисовалась. Проверьте аппаратное ускорение браузера.' : 'Вне загруженной области · Показать схему';
+  }
   /* какие слои должны быть на карте сейчас */
   function sync() {
-    var cov = covered(), sch = current === 'off', net = sch && !(cov && schema !== 'online');
+    var cur = shown(), cov = covered(), sch = cur === 'off', net = netUp && sch && !(cov && schema !== 'online');
     // офлайн-карта районов — в самом низу. «Схема»: видна в своём районе, если над ней нет схемы из
     // интернета. «Спутник» и «Гибрид»: загруженные снимки района (нет их — офлайн-схема), а поверх —
     // подробные снимки из интернета и те, что уже просматривались.
     restyle();
-    showGl(!!gl && (sch ? cov && schema !== 'online' : true));
+    showGl(!!gl && (offlineOnly || (sch ? cov && schema !== 'online' : true)));
     // вшитая карта 7–11 и схема из интернета — там, где районов офлайн-карты нет (или так выбрано)
-    put(offlineTiles, sch && !cov);
-    put(osm, net, true);
-    put(sat, current === 'sat', true);
-    put(hybrid, current === 'hyb', true);
+    put(offlineTiles, !window.KartaPC && sch && !cov);
+    put(osm, !offlineOnly && net, true);
+    put(sat, !offlineOnly && netUp && cur === 'sat', true);
+    put(hybrid, !offlineOnly && netUp && cur === 'hyb', true);
+    showCoverageNotice();
   }
   map.on('moveend zoomend', sync);
 
   window.KartaMap = {
     info: function () { return { files: info.files, gl: webgl(), drawn: !!gl }; },
+    photo: function () { return shown() !== 'off'; },          // под линиями снимки — линиям нужна тёмная тень
     glMap: function () { return gl; },
     reload: loadVec,
     note: function () {},                       // app.js подставляет всплывающее сообщение
-    credits: 'Карты: © участники OpenStreetMap (офлайн-схема — сборка Protomaps); снимки © Esri; загруженные снимки районов — Sentinel-2 cloudless, https://s2maps.eu, EOX IT Services GmbH (содержит изменённые данные Copernicus Sentinel 2016–2017); подписи на снимках © Яндекс.',
-    setSchema: function (v) { schema = v === 'online' ? 'online' : 'auto'; sync(); },
+    credits: (function () {
+      var schemaTxt = 'Схема: © участники OpenStreetMap, ODbL (выгрузка 18.11.2026); контуры домов, которых нет в OpenStreetMap, — Microsoft Global ML Building Footprints, ODbL; горизонтали — Copernicus GLO-30 DEM (© DLR e.V. 2010–2014 и © Airbus Defence and Space GmbH 2014–2018, предоставлено по программе Copernicus ЕС); плитки — схема Protomaps (Planetiler). Границы областей — OpenStreetMap. Номера домов показаны там, где они есть в OpenStreetMap.';
+      return window.KartaPC ? schemaTxt : schemaTxt + ' Снимки © Esri; загруженные снимки районов — Sentinel-2 cloudless, https://s2maps.eu, EOX IT Services GmbH (содержит изменённые данные Copernicus Sentinel 2016–2017); подписи на снимках © Яндекс.';
+    })(),
+    setSchema: function (v) { schema = !offlineOnly && v === 'online' ? 'online' : 'auto'; sync(); },
     // тема сменилась — офлайн-карта перерисовывается в светлых или тёмных цветах
     retheme: restyle
   };
@@ -347,14 +429,17 @@
   // ---------------------------------------------------------------- выбор подложки
 
   $('mapOff').textContent = 'Схема';
+  if (window.KartaPC) $('mapKinds').style.setProperty('display','none','important');
 
   window.useMap = function (kind) {
-    current = kind === 'sat' || kind === 'hyb' ? kind : 'off';
+    current = !window.KartaPC && (kind === 'sat' || kind === 'hyb') ? kind : 'off';
+    if (current !== 'off' && !netUp && !hasSat()) KartaMap.note('Нет связи — снимки появятся, когда она будет. Пока показана офлайн-схема.');
     sync();
     $('mapOff').classList.toggle('on', current === 'off');
     $('mapSat').classList.toggle('on', current === 'sat');
     $('mapHyb').classList.toggle('on', current === 'hyb');
     try { localStorage.setItem(KIND, current); } catch (e) { /* не важно */ }
+    if (window.KartaApp && KartaApp.mapChanged) KartaApp.mapChanged();
   };
 
   // у приложения на масштабе больше 11 было сообщение «офлайн-карта до зума 11» — теперь не нужно

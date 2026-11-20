@@ -38,6 +38,16 @@ final class TileCache {
     private static final long PAUSE = 20000;                    // мс без запросов после трёх неудач подряд
     private static final java.util.concurrent.atomic.AtomicInteger FAILS = new java.util.concurrent.atomic.AtomicInteger();
     private static volatile long downUntil;
+    private static volatile boolean network = true;
+
+    /** Система сообщила, есть ли сеть: без неё не ждём ответа источника, сразу отдаём запас. */
+    static void setNetwork(boolean up) {
+        network = up;
+        if (up) {
+            downUntil = 0;
+            FAILS.set(0);
+        }
+    }
     private static final String UA = "KartaSeti/2 (Android; https://github.com/Almazny26/apk_map)";
 
     private final File dir;
@@ -65,7 +75,7 @@ final class TileCache {
                 return image(cached);
             }
         }
-        if (online && System.currentTimeMillis() >= downUntil) {   // связи нет — не ждём, отдаём запас
+        if (online && network && System.currentTimeMillis() >= downUntil) {   // связи нет — не ждём, отдаём запас
             File none = new File(dir, key(url) + ".none");
             if (cached == null && none.exists() && System.currentTimeMillis() - none.lastModified() < NONE) {
                 return missing();
@@ -122,8 +132,8 @@ final class TileCache {
         code[0] = 0;
         try {
             c = (HttpURLConnection) new URL(url).openConnection();
-            c.setConnectTimeout(7000);
-            c.setReadTimeout(20000);
+            c.setConnectTimeout(4000);      // короткие ожидания: плохая связь не держит карту
+            c.setReadTimeout(8000);
             c.setRequestProperty("User-Agent", UA);
             int rc = c.getResponseCode();
             if (rc == 404) {

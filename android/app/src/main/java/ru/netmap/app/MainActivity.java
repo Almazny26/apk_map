@@ -135,7 +135,15 @@ public class MainActivity extends Activity {
             //noinspection ResultOfMethodCallIgnored
             legacy.renameTo(new File(maps, "karta-offline.pmtiles"));
         }
-        offline = new OfflineTiles(maps);
+        android.content.res.AssetFileDescriptor builtin = null;
+        try {
+            // вшитая офлайн-схема (левый берег): лежит в APK без сжатия, читается кусками по смещению
+            builtin = getAssets().openFd("maps/karta-offline.pmtiles");
+        } catch (IOException ignored) {
+            // сборка без вшитой карты — только загруженные файлы
+        }
+        offline = new OfflineTiles(maps, builtin);
+        watchNetwork();
         web = new WebView(this);
         setContentView(web);
         WebSettings s = web.getSettings();
@@ -163,6 +171,20 @@ public class MainActivity extends Activity {
         web.setWebViewClient(new Client());
         web.loadUrl("file:///android_asset/index.html");
         handleIncoming(getIntent());
+    }
+
+    @Override
+    protected void onDestroy() {
+        tileJobs.clear();
+        tilePool.shutdownNow();
+        flushNet(3000);
+        netWriter.shutdown();
+        if (web != null) {
+            setContentView(new View(this));
+            web.destroy();
+            web = null;
+        }
+        super.onDestroy();
     }
 
     @Override
@@ -599,16 +621,12 @@ public class MainActivity extends Activity {
                 throw new IOException("связь оборвалась, скачано не всё — нажмите «Скачать» ещё раз, продолжится с того же места");
             }
         }
-        byte[] magic = new byte[7];
-        try (InputStream chk = new java.io.FileInputStream(tmp)) {
-            if (chk.read(magic) != 7 || !"PMTiles".equals(new String(magic, StandardCharsets.US_ASCII))) {
-                throw new IOException("это не файл офлайн-карты");
-            }
-        }
-        offline.delete(slug);
+        OfflineTiles.validate(tmp);
         File dst = new File(offline.dir(), slug + ".pmtiles");
-        if (!tmp.renameTo(dst)) {
-            throw new IOException("не удалось сохранить карту");
+        try {
+            android.system.Os.rename(tmp.getAbsolutePath(), dst.getAbsolutePath());
+        } catch (android.system.ErrnoException e) {
+            throw new IOException("не удалось сохранить карту", e);
         }
         offline.scan();
     }
@@ -837,7 +855,100 @@ public class MainActivity extends Activity {
     @Override
     protected void onPause() {
         stopLocate();
+        flushNet(2000);           // карта сети уже на диске, даже если приложение сейчас закроют
         super.onPause();
+    }
+
+    // ------------------------------------------------------------------ есть ли интернет
+
+    private volatile boolean netUp = true;
+
+    private void watchNetwork() {
+        try {
+            android.net.ConnectivityManager cm = (android.net.ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+            if (cm == null) {
+                return;
+            }
+            android.net.Network active = cm.getActiveNetwork();
+            android.net.NetworkCapabilities caps = active == null ? null : cm.getNetworkCapabilities(active);
+            setNet(caps != null && caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET));
+            cm.registerDefaultNetworkCallback(new android.net.ConnectivityManager.NetworkCallback() {
+                @Override
+                public void onAvailable(android.net.Network network) {
+                    setNet(true);
+                }
+
+                @Override
+                public void onLost(android.net.Network network) {
+                    setNet(false);
+                }
+            });
+        } catch (Exception ignored) {
+            // нет разрешения — считаем, что связь есть, а плитки сами скажут об ошибке
+        }
+    }
+
+    private void setNet(boolean up) {
+        boolean was = netUp;
+        netUp = up;
+        TileCache.setNetwork(up);
+        if (was != up) {
+            runOnUiThread(() -> js("window.__kartaNet&&__kartaNet(" + up + ")"));
+        }
+    }
+
+    // ------------------------------------------------------------------ карта сети в файле
+
+    /* Большая сеть не помещается в localStorage WebView (около 5 млн знаков). Карта пишется файлом
+       files/net/<name>.json: в фоне (страница не ждёт), через временный файл и fsync, последняя версия
+       побеждает. При сворачивании приложения запись дожидается окончания. */
+    private final ExecutorService netWriter = Executors.newSingleThreadExecutor();
+    private final java.util.HashMap<String, String> netPending = new java.util.HashMap<>();
+    private static final String NULL_TEXT = "\u0000delete";
+
+    private File netFile(String name) {
+        File d = new File(getFilesDir(), "net");
+        //noinspection ResultOfMethodCallIgnored
+        d.mkdirs();
+        return new File(d, name + ".json");
+    }
+
+    private void writeNet(String name) {
+        String text;
+        synchronized (netPending) {
+            text = netPending.remove(name);
+        }
+        if (text == null) {
+            return;
+        }
+        File f = netFile(name);
+        if (NULL_TEXT.equals(text)) {
+            //noinspection ResultOfMethodCallIgnored
+            f.delete();
+            return;
+        }
+        File tmp = new File(f.getPath() + ".tmp");
+        try (FileOutputStream out = new FileOutputStream(tmp)) {
+            out.write(text.getBytes(StandardCharsets.UTF_8));
+            out.flush();
+            out.getFD().sync();
+        } catch (IOException e) {
+            return;
+        }
+        if (!tmp.renameTo(f)) {
+            //noinspection ResultOfMethodCallIgnored
+            f.delete();
+            //noinspection ResultOfMethodCallIgnored
+            tmp.renameTo(f);
+        }
+    }
+
+    private void flushNet(long waitMs) {
+        try {
+            netWriter.submit(() -> { }).get(waitMs, TimeUnit.MILLISECONDS);
+        } catch (Exception ignored) {
+            // не успели — запись продолжится в фоне
+        }
     }
 
     private static String safeName(String name) {
@@ -951,6 +1062,72 @@ public class MainActivity extends Activity {
             return "android";
         }
 
+        /** Карта сети из файла: name — "net" (карта) или "prev" (до загрузки файла); пусто — файла нет. */
+        @JavascriptInterface
+        public String netLoad(String name) {
+            if (!"net".equals(name) && !"prev".equals(name)) {
+                return "";
+            }
+            synchronized (netPending) {
+                String p = netPending.get(name);
+                if (p != null) {
+                    return NULL_TEXT.equals(p) ? "" : p;
+                }
+            }
+            File f = netFile(name);
+            if (!f.isFile() || f.length() > MAX_FILE) {
+                return "";
+            }
+            try (InputStream in = new java.io.FileInputStream(f)) {
+                ByteArrayOutputStream out = new ByteArrayOutputStream((int) f.length());
+                byte[] buf = new byte[65536];
+                int n;
+                while ((n = in.read(buf)) > 0) {
+                    out.write(buf, 0, n);
+                }
+                return new String(out.toByteArray(), StandardCharsets.UTF_8);
+            } catch (IOException e) {
+                return "";
+            }
+        }
+
+        /** Записать карту сети (в фоне); text = null — удалить. */
+        @JavascriptInterface
+        public boolean netSave(String name, String text) {
+            if (!"net".equals(name) && !"prev".equals(name)) {
+                return false;
+            }
+            synchronized (netPending) {
+                boolean queued = netPending.containsKey(name);
+                netPending.put(name, text == null ? NULL_TEXT : text);
+                if (!queued) {
+                    try {
+                        netWriter.execute(() -> writeNet(name));
+                    } catch (java.util.concurrent.RejectedExecutionException e) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }
+
+        /** Есть ли сейчас интернет (по данным системы). */
+        @JavascriptInterface
+        public boolean networkUp() {
+            return netUp;
+        }
+
+        /** Короткий отклик при постановке точки (без разрешения на вибрацию). */
+        @JavascriptInterface
+        public void tick() {
+            runOnUiThread(() -> {
+                if (web != null) {
+                    web.performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY,
+                            android.view.HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING);
+                }
+            });
+        }
+
         /** Файлы офлайн-карты: JSON [{slug, size, mtime, bounds}]. */
         @JavascriptInterface
         public String mapList() {
@@ -1000,11 +1177,15 @@ public class MainActivity extends Activity {
                     return null;                      // страница уже отказалась от этой плитки
                 }
                 final String js = "window.__kartaTile&&__kartaTile(" + id + ",'" + s + "')";
-                runOnUiThread(() -> web.evaluateJavascript(js, null));
+                runOnUiThread(() -> js(js));
                 return null;
             });
             tileJobs.put(id, task);
-            tilePool.execute(task);
+            try {
+                tilePool.execute(task);
+            } catch (java.util.concurrent.RejectedExecutionException e) {
+                tileJobs.remove(id, task);
+            }
         }
 
         /** Плитка больше не нужна (карту увели дальше) — если ещё не читалась, не читать. */

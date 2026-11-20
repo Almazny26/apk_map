@@ -44,13 +44,20 @@ class ServerTest(unittest.TestCase):
         cls.tmp = tempfile.TemporaryDirectory()
         app = run.App(cls.tmp.name, lambda *a: None)
         cls.server = run.Server(("127.0.0.1", 0), run.make_handler(app))
+        cls.app = app
         cls.base = "http://127.0.0.1:%d" % cls.server.server_address[1]
         threading.Thread(target=cls.server.serve_forever, daemon=True).start()
+
+    def setUp(self):
+        # Each HTTP test starts with its own empty state, irrespective of method order.
+        if os.path.exists(self.app.state.path):
+            os.remove(self.app.state.path)
 
     @classmethod
     def tearDownClass(cls):
         cls.server.shutdown()
         cls.server.server_close()
+        cls.app.close()
         cls.tmp.cleanup()
 
     def get(self, path, headers=None):
@@ -71,8 +78,12 @@ class ServerTest(unittest.TestCase):
         self.assertIn('rel="icon"', html)
         with self.get("/favicon.ico") as r:
             self.assertGreater(len(r.read()), 1000)
-        with self.get("/tiles/8/159/91.png") as r:
-            self.assertEqual(r.headers.get_content_type(), "image/png")
+        self.assertIsNone(self.app.tiles.zip)
+        for route in ['/tiles/8/159/91.png','/tc/sat/8/159/91','/osat/8/159/91.jpg']:
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                self.get(route)
+            self.assertEqual(error.exception.code,404)
+            error.exception.close()
         with self.assertRaises(urllib.error.HTTPError):
             self.get("/../run.py")
 
@@ -84,20 +95,19 @@ class ServerTest(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError):
             self.post("/api/state", {"wf_nodes": 5})
 
-    def test_tile_cache_offline(self):
-        """Без «Онлайн» онлайн-карта берётся только из запаса на диске, в интернет программа не ходит."""
+    def test_old_tile_cache_is_not_served(self):
+        """Старый растровый кэш не подменяет единственную офлайн-схему ПК."""
         png = b"\x89PNG\r\n\x1a\n" + b"\0" * 100
         folder = os.path.join(self.tmp.name, "tilecache", "osm", "5", "17")
         os.makedirs(folder, exist_ok=True)
         with open(os.path.join(folder, "11"), "wb") as f:
             f.write(png)
         self.post("/api/state", {"wf_online": "0"})
-        with self.get("/tc/osm/5/17/11") as r:
-            self.assertEqual((r.headers.get_content_type(), r.read()), ("image/png", png))
-        for bad in ("/tc/osm/5/17/12", "/tc/evil/5/1/1", "/tc/osm/3/99/1"):
+        for bad in ("/tc/osm/5/17/11", "/tc/osm/5/17/12", "/tc/evil/5/1/1", "/tc/osm/3/99/1"):
             with self.assertRaises(urllib.error.HTTPError) as cm:
                 self.get(bad)
             self.assertEqual(cm.exception.code, 404, bad)
+            cm.exception.close()
 
     def test_elev(self):
         r = json.loads(self.post("/api/elev", {"locs": "44.95210,34.10240", "online": False}).read())
@@ -166,6 +176,10 @@ class OfflineMapTest(unittest.TestCase):
             self.assertTrue(gz)
             self.assertEqual(gzip.decompress(data), b"house")
             self.assertIsNone(m.tile(15, 1, 1))
+            invalid = b"PMTiles" + bytes(200)
+            with self.assertRaises(ValueError):
+                m.upload("Мой район (1).pmtiles", io.BytesIO(invalid), len(invalid))
+            self.assertEqual(gzip.decompress(m.tile(15, 19352, 11573)[0]), b"house")
             with self.assertRaises(ValueError):
                 m.upload("x.pmtiles", io.BytesIO(b"not a map" * 40), 360)
             self.assertTrue(m.delete(slug))
@@ -217,6 +231,7 @@ class OfflineHttpTest(unittest.TestCase):
         app = run.App(cls.tmp.name, lambda *a: None)
         os.environ.pop("KARTA_MAP_DIR")
         cls.server = run.Server(("127.0.0.1", 0), run.make_handler(app))
+        cls.app = app
         cls.base = "http://127.0.0.1:%d" % cls.server.server_address[1]
         threading.Thread(target=cls.server.serve_forever, daemon=True).start()
 
@@ -224,15 +239,16 @@ class OfflineHttpTest(unittest.TestCase):
     def tearDownClass(cls):
         cls.server.shutdown()
         cls.server.server_close()
+        cls.app.close()
         cls.tmp.cleanup()
 
     def test_upload_tile_fonts(self):
         blob = OfflineMapTest.tiny({(15, 19352, 11573): b"house"})
-        r = urllib.request.urlopen(urllib.request.Request(self.base + "/api/mapupload?name=test.pmtiles", data=blob, method="POST"), timeout=10)
+        r = urllib.request.urlopen(urllib.request.Request(self.base + "/api/mapupload?name=kherson.pmtiles", data=blob, method="POST"), timeout=10)
         self.assertTrue(json.loads(r.read())["ok"])
         st = json.loads(urllib.request.urlopen(self.base + "/api/map", timeout=10).read())
-        self.assertEqual([f["slug"] for f in st["files"]], ["test"])
-        self.assertEqual([g["slug"] for g in st["regions"]], ["kherson", "zaporozhye", "crimea"])
+        self.assertEqual([f["slug"] for f in st["files"]], ["kherson"])
+        self.assertEqual([g["slug"] for g in st["regions"]], ["kherson", "zaporozhye"])
         r = urllib.request.urlopen(self.base + "/omap/15/19352/11573.mvt", timeout=10)
         self.assertEqual(r.headers.get("Content-Encoding"), "gzip")
         self.assertEqual(__import__("gzip").decompress(r.read()), b"house")
@@ -247,13 +263,17 @@ class OfflineHttpTest(unittest.TestCase):
             path = OfflineMapTest.sat_file(d)[0]
             with open(path, "rb") as f:
                 blob = f.read()
-        urllib.request.urlopen(urllib.request.Request(self.base + "/api/mapupload?name=t-sat.pmtiles", data=blob, method="POST"), timeout=10)
-        st = json.loads(urllib.request.urlopen(self.base + "/api/map", timeout=10).read())
-        self.assertEqual(sorted((f["slug"], f["kind"]) for f in st["files"]), [("t-sat", "sat"), ("test", "map")])
-        r = urllib.request.urlopen(self.base + "/osat/6/37/22.jpg", timeout=10)
-        self.assertEqual((r.headers.get("Content-Type"), r.read()[:2]), ("image/jpeg", b"\xff\xd8"))
-        with self.assertRaises(urllib.error.HTTPError):
-            urllib.request.urlopen(self.base + "/osat/5/18/11.jpg", timeout=10)
+        for name in ['t-sat.pmtiles', 'crimea.pmtiles', 'other.pmtiles', 'zaporozhye.pmtiles']:
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                urllib.request.urlopen(urllib.request.Request(self.base + '/api/mapupload?name='+name,data=blob,method='POST'),timeout=10)
+            self.assertEqual(error.exception.code,400)
+            error.exception.close()
+        st = json.loads(urllib.request.urlopen(self.base + '/api/map',timeout=10).read())
+        self.assertEqual([(f['slug'],f['kind']) for f in st['files']],[('kherson','map')])
+        with self.assertRaises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(self.base + '/osat/6/37/22.jpg',timeout=10)
+        self.assertEqual(error.exception.code,404)
+        error.exception.close()
         with self.assertRaises(urllib.error.HTTPError):
             urllib.request.urlopen(urllib.request.Request(self.base + "/api/mapupload?name=bad.pmtiles", data=b"x" * 500, method="POST"), timeout=10)
 

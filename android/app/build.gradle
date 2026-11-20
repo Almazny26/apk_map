@@ -2,9 +2,26 @@ plugins {
     id 'com.android.application'
 }
 
-// Номер версии передаёт сборка GitHub Actions: -Pvc=<номер сборки> -Pvn=1.0.<номер сборки>
-def vc = (project.findProperty('vc') ?: '1') as int
-def vn = (project.findProperty('vn') ?: '1.0.0-dev') as String
+// Номер версии передаёт сборка GitHub Actions: -Pvc=<350000 + номер сборки> -Pvn=3.5.0.<номер сборки>
+// (код больше прежних 2.0.N, поэтому 3.5 ставится поверх них)
+def vc = (project.findProperty('vc') ?: '350000') as int
+def vn = (project.findProperty('vn') ?: '3.5.0') as String
+
+// Офлайн-схема (левый берег, ~160 МБ) вшивается в APK. В git её нет (ограничение GitHub 100 МБ):
+// сборка берёт файл -PmapFile=… или ../../map/karta-offline.pmtiles (так же лежит у ПК-версии),
+// а GitHub Actions скачивает его из релиза с проверкой SHA-256 (см. .github/workflows/build-apk.yml).
+def mapSrc = file((project.findProperty('mapFile') ?: '../../map/karta-offline.pmtiles') as String)
+def mapAssets = layout.buildDirectory.dir('mapassets')
+tasks.register('offlineMap', Copy) {
+    from(mapSrc) { rename { 'karta-offline.pmtiles' } }
+    into(mapAssets.map { it.dir('maps') })
+    doFirst {
+        if (!mapSrc.isFile()) {
+            if (project.hasProperty('requireMap')) throw new GradleException("Нет файла офлайн-схемы: ${mapSrc}")
+            logger.warn("ВНИМАНИЕ: файла офлайн-схемы ${mapSrc} нет — APK без вшитой карты")
+        }
+    }
+}
 
 android {
     namespace 'ru.netmap.app'
@@ -40,8 +57,15 @@ android {
     // Клиент один на всё: тот же каталог web/ раздаёт сервер и он же вшивается в APK
     sourceSets {
         main {
-            assets.srcDirs = ['../../web']
+            assets.srcDirs = ['../../web', mapAssets]
         }
+    }
+
+    androidResources {
+        // Архив нужен только ПК; Android использует распакованные tiles/.
+        ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:CVS:thumbs.db:picasa.ini:*~:*.zip'
+        // карта лежит в APK как есть: читается по смещению (AssetFileDescriptor), без распаковки в память
+        noCompress 'pmtiles'
     }
 
     compileOptions {
@@ -53,4 +77,8 @@ android {
         checkReleaseBuilds false
         abortOnError false
     }
+}
+
+afterEvaluate {
+    tasks.matching { it.name.startsWith('merge') && it.name.endsWith('Assets') }.configureEach { dependsOn 'offlineMap' }
 }

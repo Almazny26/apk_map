@@ -1,15 +1,10 @@
 name: Сборка APK
 
-# Собирает Android-приложение и кладёт готовый файл в apk/karta-seti.apk.
-# Запускается сам, когда меняется клиент (web/) или оболочка (android/).
+# Собирает Android-приложение со вшитой офлайн-схемой и выкладывает подписанный APK в релиз
+# репозитория (APK со схемой ~165 МБ — больше лимита GitHub 100 МБ на файл в git).
+# В git попадает только apk/version.json со ссылкой на релиз. Запуск — вручную (Actions → Run workflow).
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'android/**'
-      - 'web/**'
-      - '.github/workflows/build-apk.yml'
   workflow_dispatch:
 
 permissions:
@@ -22,14 +17,31 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
+
+      - name: Номер версии
+        # код больше прежних 2.0.N (37…), поэтому 3.5 ставится поверх старого приложения
+        run: |
+          echo "VC=$((350000 + GITHUB_RUN_NUMBER))" >> "$GITHUB_ENV"
+          echo "VN=3.5.0.$GITHUB_RUN_NUMBER" >> "$GITHUB_ENV"
 
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
+
+      - name: Скачать офлайн-схему и проверить SHA-256
+        run: |
+          url=$(sed -n 's/^url=//p' android/offline-map.properties)
+          sha=$(sed -n 's/^sha256=//p' android/offline-map.properties)
+          size=$(sed -n 's/^size=//p' android/offline-map.properties)
+          mkdir -p "$RUNNER_TEMP/map"
+          curl -fL --retry 4 --retry-delay 5 -o "$RUNNER_TEMP/map/karta-offline.pmtiles" "$url"
+          got=$(stat -c %s "$RUNNER_TEMP/map/karta-offline.pmtiles")
+          [ "$got" = "$size" ] || { echo "::error::Размер схемы $got, ожидалось $size ($url)"; exit 1; }
+          echo "$sha  $RUNNER_TEMP/map/karta-offline.pmtiles" | sha256sum -c - || { echo "::error::SHA-256 схемы не совпал ($url)"; exit 1; }
 
       - name: Подготовить ключ подписи
         id: key
@@ -50,27 +62,38 @@ jobs:
         working-directory: android
         run: |
           chmod +x gradlew
-          ./gradlew --no-daemon assembleRelease -Pvc=${{ github.run_number }} -Pvn=2.0.${{ github.run_number }}
+          ./gradlew --no-daemon assembleRelease -Pvc=$VC -Pvn=$VN -PrequireMap -PmapFile="$RUNNER_TEMP/map/karta-offline.pmtiles"
 
-      - name: Проверить подпись
+      - name: Проверить подпись и карту внутри
         run: |
           APK=android/app/build/outputs/apk/release/app-release.apk
           ls -la "$APK"
           BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
           "$BT/apksigner" verify --print-certs "$APK"
+          # карта должна лежать без сжатия (читается по смещению)
+          unzip -v "$APK" assets/maps/karta-offline.pmtiles | grep -q " Stored " || { echo "::error::карта в APK сжата"; exit 1; }
 
-      - name: Положить APK в репозиторий
+      - name: Выложить APK в релиз
         if: steps.key.outputs.real == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
+          APK=android/app/build/outputs/apk/release/app-release.apk
+          cp "$APK" karta-seti.apk
+          SHA=$(sha256sum karta-seti.apk | cut -d' ' -f1)
+          TAG="apk-$VN"
+          gh release create "$TAG" karta-seti.apk --target "${{ github.sha }}" --title "Приложение $VN" \
+            --notes "Карта сети $VN для Android (со вшитой офлайн-схемой левого берега). SHA-256: $SHA"
+          URL="https://github.com/${{ github.repository }}/releases/download/$TAG/karta-seti.apk"
           mkdir -p apk
-          cp android/app/build/outputs/apk/release/app-release.apk apk/karta-seti.apk
-          cat > apk/version.json <<EOF
-          {"versionCode": ${{ github.run_number }}, "versionName": "2.0.${{ github.run_number }}", "commit": "${{ github.sha }}", "built": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
-          EOF
+          cat > apk/version.json <<JSON
+          {"versionCode": $VC, "versionName": "$VN", "commit": "${{ github.sha }}", "built": "$(date -u +%Y-%m-%dT%H:%M:%SZ)", "url": "$URL", "sha256": "$SHA", "size": $(stat -c %s karta-seti.apk)}
+          JSON
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add apk
-          git commit -m "APK 2.0.${{ github.run_number }} [skip ci]"
+          git rm -q --ignore-unmatch apk/karta-seti.apk     # APK теперь только в релизах
+          git add apk/version.json
+          git commit -m "APK $VN [skip ci]"
           git pull --rebase --autostash origin main
           git push origin HEAD:main
 

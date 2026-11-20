@@ -4,11 +4,13 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.ByteArrayInputStream;
+import java.io.Closeable;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.RandomAccessFile;
+import java.nio.channels.FileChannel;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
@@ -39,7 +41,10 @@ final class OfflineTiles {
         String slug;
         long size;
         long mtime;
-        RandomAccessFile raf;
+        boolean builtin;     // вшита в приложение (assets, без сжатия), удалить нельзя
+        Closeable owner;
+        FileChannel ch;
+        long base;           // начало файла внутри APK (для вшитой карты), иначе 0
         long leafOff;
         long dataOff;
         int internal;
@@ -59,10 +64,21 @@ final class OfflineTiles {
             }
         };
 
-        synchronized byte[] read(long off, int len) throws IOException {
+        /* Чтение куска по смещению прямо из файла (или из APK): карта целиком в память не читается. */
+        byte[] read(long off, int len) throws IOException {
+            if (off < 0 || len < 0 || off + len > size) {
+                throw new IOException("за пределами файла");
+            }
             byte[] b = new byte[len];
-            raf.seek(off);
-            raf.readFully(b);
+            ByteBuffer buf = ByteBuffer.wrap(b);
+            long pos = base + off;
+            while (buf.hasRemaining()) {
+                int n = ch.read(buf, pos);
+                if (n < 0) {
+                    throw new IOException("файл короче ожидаемого");
+                }
+                pos += n;
+            }
             return b;
         }
 
@@ -77,7 +93,7 @@ final class OfflineTiles {
 
         synchronized void close() {
             try {
-                raf.close();
+                owner.close();
             } catch (IOException ignored) {
                 // всё равно
             }
@@ -86,9 +102,31 @@ final class OfflineTiles {
 
     private final File dir;
     private List<Pm> files = new ArrayList<>();
+    private Pm embedded;
 
     OfflineTiles(File dir) {
+        this(dir, null);
+    }
+
+    /** embedded — вшитая в APK схема (assets/maps/*.pmtiles без сжатия); null — нет. */
+    OfflineTiles(File dir, android.content.res.AssetFileDescriptor embedded) {
         this.dir = dir;
+        if (embedded != null) {
+            try {
+                java.io.FileInputStream in = embedded.createInputStream();
+                Pm p = new Pm();
+                p.slug = "karta-offline";
+                p.builtin = true;
+                p.size = embedded.getLength();
+                p.ch = in.getChannel();
+                p.base = embedded.getStartOffset();
+                p.owner = embedded;
+                header(p);
+                this.embedded = p;
+            } catch (IOException | RuntimeException e) {
+                this.embedded = null;
+            }
+        }
         //noinspection ResultOfMethodCallIgnored
         dir.mkdirs();
         scan();
@@ -139,29 +177,49 @@ final class OfflineTiles {
         p.slug = f.getName().substring(0, f.getName().length() - ".pmtiles".length());
         p.size = f.length();
         p.mtime = f.lastModified();
-        p.raf = new RandomAccessFile(f, "r");
-        byte[] h = new byte[127];
-        p.raf.readFully(h);
-        if (h[0] != 'P' || h[1] != 'M' || h[2] != 'T' || h[3] != 'i' || h[7] != 3) {
-            p.raf.close();
-            throw new IOException("не PMTiles");
+        RandomAccessFile raf = new RandomAccessFile(f, "r");
+        p.owner = raf;
+        p.ch = raf.getChannel();
+        p.base = 0;
+        try {
+            header(p);
+            return p;
+        } catch (IOException | RuntimeException e) {
+            p.close();
+            throw new IOException("повреждённый файл PMTiles", e);
         }
-        ByteBuffer b = ByteBuffer.wrap(h).order(ByteOrder.LITTLE_ENDIAN);
-        long rootOff = b.getLong(8);
-        long rootLen = b.getLong(16);
-        p.leafOff = b.getLong(40);
-        p.dataOff = b.getLong(56);
-        p.internal = h[97];
-        p.tileComp = h[98];
-        p.tileType = h[99];
-        p.minZoom = h[100];
-        p.maxZoom = h[101];
-        p.w = b.getInt(102) / 1e7;
-        p.s = b.getInt(106) / 1e7;
-        p.e = b.getInt(110) / 1e7;
-        p.n = b.getInt(114) / 1e7;
-        p.root = parse(p.read(rootOff, (int) rootLen), p.internal);
-        return p;
+    }
+
+    private static void header(Pm p) throws IOException {
+        {
+            byte[] h = p.read(0, 127);
+            if (h[0] != 'P' || h[1] != 'M' || h[2] != 'T' || h[3] != 'i' || h[7] != 3) {
+                throw new IOException("не PMTiles");
+            }
+            ByteBuffer b = ByteBuffer.wrap(h).order(ByteOrder.LITTLE_ENDIAN);
+            long rootOff = b.getLong(8);
+            long rootLen = b.getLong(16);
+            if (rootOff < 127 || rootLen <= 0 || rootLen > 4 * 1024 * 1024 || rootLen > p.size - rootOff) {
+                throw new IOException("неверный каталог PMTiles");
+            }
+            p.leafOff = b.getLong(40);
+            p.dataOff = b.getLong(56);
+            p.internal = h[97];
+            p.tileComp = h[98];
+            p.tileType = h[99];
+            p.minZoom = h[100];
+            p.maxZoom = h[101];
+            p.w = b.getInt(102) / 1e7;
+            p.s = b.getInt(106) / 1e7;
+            p.e = b.getInt(110) / 1e7;
+            p.n = b.getInt(114) / 1e7;
+            p.root = parse(p.read(rootOff, (int) rootLen), p.internal);
+            if (p.root.ids.length == 0) throw new IOException("пустой каталог PMTiles");
+        }
+    }
+
+    static void validate(File file) throws IOException {
+        open(file).close();
     }
 
     private static byte[] gunzip(byte[] data) throws IOException {
@@ -267,6 +325,10 @@ final class OfflineTiles {
         List<Pm> list;
         synchronized (this) {
             list = files;
+            if (embedded != null && !sat) {      // схема — сначала вшитая (под неё написан стиль страницы)
+                list = new ArrayList<>(list);
+                list.add(0, embedded);
+            }
         }
         if (z < 0 || z > 24) {
             return null;
@@ -300,12 +362,21 @@ final class OfflineTiles {
     synchronized String list() {
         JSONArray a = new JSONArray();
         try {
-            for (Pm p : files) {
+            List<Pm> all = new ArrayList<>();
+            if (embedded != null) {
+                all.add(embedded);
+            }
+            all.addAll(files);
+            for (Pm p : all) {
                 JSONObject o = new JSONObject();
                 o.put("slug", p.slug);
                 o.put("size", p.size);
                 o.put("mtime", p.mtime);
                 o.put("kind", p.tileType == 1 ? "map" : "sat");
+                o.put("maxzoom", p.maxZoom);
+                if (p.builtin) {
+                    o.put("builtin", true);
+                }
                 o.put("bounds", new JSONArray(new double[]{p.w, p.s, p.e, p.n}));
                 a.put(o);
             }
@@ -318,7 +389,7 @@ final class OfflineTiles {
     synchronized boolean delete(String slug) {
         boolean ok = false;
         for (Pm p : files) {
-            if (p.slug.equals(slug)) {
+            if (p.slug.equals(slug) && !p.builtin) {
                 p.close();
                 ok = p.file.delete();
             }

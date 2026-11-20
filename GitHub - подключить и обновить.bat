@@ -1,44 +1,22 @@
 @echo off
 chcp 65001 >nul
-rem Связывает эту папку с репозиторием GitHub Almazny26/apk_map и подтягивает последние изменения
-rem (в том числе свежий APK в папке apk). Папки data и data-demo с базой, пользователями и журналом
-rem не трогаются и в GitHub не попадают.
 cd /d "%~dp0"
-where git >nul 2>&1
-if errorlevel 1 (
-  echo Git не установлен. Скачайте и установите Git for Windows: https://git-scm.com/download/win
-  echo При установке все параметры можно оставить по умолчанию. Потом запустите этот файл ещё раз.
-  pause
-  exit /b 1
-)
 if not exist ".git" (
-  echo Подключаю папку к GitHub...
-  git init -q -b main
-  git config core.autocrlf false
-  git config core.filemode false
-  git config core.quotepath false
-  git remote add origin https://github.com/Almazny26/apk_map.git
-  git fetch origin main || goto err
-  git reset -q --mixed origin/main || goto err
-  rem файл сборки APK в .github Claude положить в папку не может - его восстанавливает сам git
-  git checkout -q -- .github 2>nul
-  git branch -q --set-upstream-to=origin/main main
-  echo Готово: папка связана с репозиторием Almazny26/apk_map.
-) else (
-  echo Получаю обновления из GitHub...
-  git checkout -q -- .github 2>nul
-  git pull --ff-only origin main || goto err
+ echo Скачайте проект через git clone https://github.com/Almazny26/karta-seti-gpt.git
+ pause
+ exit /b 1
 )
-echo.
-git log -1 --format="Текущая версия: %%h %%s (%%cd)" --date=format:"%%d.%%m.%%Y %%H:%%M"
-git status --short
-echo.
-echo Если программа открыта, закройте её чёрное окно и запустите «Карта сети.bat» снова.
+for /f "delims=" %%R in ('git remote get-url origin') do set "REMOTE=%%R"
+if not "%REMOTE%"=="https://github.com/Almazny26/karta-seti-gpt.git" (
+ echo Папка подключена к другому репозиторию. Обновление остановлено.
+ pause
+ exit /b 1
+)
+git pull --ff-only origin main
+if errorlevel 1 (
+ echo Не удалось обновить. Сохраните местные изменения перед повторным запуском.
+ pause
+ exit /b 1
+)
+echo Обновление завершено. Перезапустите программу.
 pause
-exit /b 0
-:err
-echo.
-echo Не получилось. Если GitHub попросил войти - войдите в свой аккаунт и запустите файл ещё раз.
-echo Если пишет про изменённые файлы - сообщите, что именно он вывел.
-pause
-exit /b 1
