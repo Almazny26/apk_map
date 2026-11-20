@@ -171,7 +171,8 @@
     panel.id = 'apUsersDialog';
     var head = element('div', '', panel); head.className = 'us-head';
     element('h2', 'Пользователи', head);
-    button('×', head, 'us-close', function () { currentPanel.close(); }).setAttribute('aria-label','Закрыть');
+    var closeBtn = button('', head, 'us-close', function () { currentPanel.close(); }); closeBtn.setAttribute('aria-label','Закрыть'); closeBtn.title = 'Закрыть';
+    closeBtn.innerHTML = '<svg viewBox="0 0 14 14" width="14" height="14" aria-hidden="true"><path d="M3 3l8 8M11 3l-8 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
     var tabs = element('div', '', panel); tabs.className = 'us-tabs'; tabs.setAttribute('role','tablist');
     var content = element('div', '', panel); content.className = 'us-content';
     var members = button('Участники', tabs, '', function () { show('members'); }); members.setAttribute('role','tab');

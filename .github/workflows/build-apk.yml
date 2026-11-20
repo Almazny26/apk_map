@@ -24,8 +24,8 @@ jobs:
       - name: Номер версии
         # код больше прежних 2.0.N (37…), поэтому 3.5 ставится поверх старого приложения
         run: |
-          echo "VC=$((350000 + GITHUB_RUN_NUMBER))" >> "$GITHUB_ENV"
-          echo "VN=3.5.0.$GITHUB_RUN_NUMBER" >> "$GITHUB_ENV"
+          echo "VC=$((353000 + GITHUB_RUN_NUMBER))" >> "$GITHUB_ENV"
+          echo "VN=3.5.3.$GITHUB_RUN_NUMBER" >> "$GITHUB_ENV"
 
       - uses: actions/setup-java@v5
         with:

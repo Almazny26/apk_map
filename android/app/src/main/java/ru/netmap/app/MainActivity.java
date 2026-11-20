@@ -57,8 +57,8 @@ import java.util.concurrent.TimeUnit;
  * Оболочка приложения «Карта сети» (основа — приложение товарища «WiFi Френель» 1.24).
  *
  * Поведение перенесено из его оболочки без изменений:
- *   - страница web/index.html открывается из assets; плитки карты и Leaflet отдаются из assets
- *     по адресу https://local.tiles/...;
+ *   - страница web/index.html открывается из assets; Leaflet отдаётся из assets по адресу
+ *     https://local.tiles/leaflet/... (растровая карта 7–11 убрана в 3.5.3: её заменила вшитая схема);
  *   - без галочки «Онлайн» приложение не выходит в сеть (setBlockNetworkLoads), все внешние запросы
  *     получают пустой ответ;
  *   - мост AndroidBridge: fetchElevations (рельеф из assets/dem/dem.bin, при «Онлайн» — open-meteo),
@@ -116,6 +116,21 @@ public class MainActivity extends Activity {
     private LocationListener locListener = null;
     private final Handler ui = new Handler(Looper.getMainLooper());
 
+    private void dropOldMaps() {
+        File maps = new File(getFilesDir(), "maps");
+        File[] list = maps.listFiles();
+        if (list != null) {
+            for (File f : list) {
+                //noinspection ResultOfMethodCallIgnored
+                f.delete();
+            }
+        }
+        //noinspection ResultOfMethodCallIgnored
+        maps.delete();
+        //noinspection ResultOfMethodCallIgnored
+        new File(getFilesDir(), "karta-offline.pmtiles").delete();
+    }
+
     private boolean isOnline() {
         return getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean("online", false);
     }
@@ -126,23 +141,16 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         tileCache = new TileCache(new File(getFilesDir(), "tilecache"));
         new Thread(tileCache::prune).start();
-        File maps = new File(getFilesDir(), "maps");
-        //noinspection ResultOfMethodCallIgnored
-        maps.mkdirs();
-        // файл карты из версий 3.0–3.1 переезжает в папку карт
-        File legacy = new File(getFilesDir(), "karta-offline.pmtiles");
-        if (legacy.isFile()) {
-            //noinspection ResultOfMethodCallIgnored
-            legacy.renameTo(new File(maps, "karta-offline.pmtiles"));
-        }
+        // карты районов, скачанные версиями до 3.5.1, больше не читаются — освобождаем место (сотни МБ)
+        new Thread(() -> dropOldMaps()).start();
         android.content.res.AssetFileDescriptor builtin = null;
         try {
             // вшитая офлайн-схема (левый берег): лежит в APK без сжатия, читается кусками по смещению
             builtin = getAssets().openFd("maps/karta-offline.pmtiles");
         } catch (IOException ignored) {
-            // сборка без вшитой карты — только загруженные файлы
+            // сборка без вшитой карты — схема только из интернета
         }
-        offline = new OfflineTiles(maps, builtin);
+        offline = new OfflineTiles(builtin);
         watchNetwork();
         web = new WebView(this);
         setContentView(web);
@@ -228,16 +236,17 @@ public class MainActivity extends Activity {
                 if (path == null) {
                     return null;
                 }
-                int t = path.indexOf("tiles/");
                 int l = path.indexOf("leaflet/");
-                String asset = t >= 0 ? path.substring(t) : (l >= 0 ? path.substring(l) : null);
+                String asset = l >= 0 ? path.substring(l) : null;
                 if (asset == null || asset.contains("..")) {
                     return super.shouldInterceptRequest(view, request);
                 }
                 try {
                     InputStream in = getAssets().open(asset);
-                    String mime = "image/png";
-                    if (asset.endsWith(".css")) {
+                    String mime = "application/octet-stream";
+                    if (asset.endsWith(".png")) {
+                        mime = "image/png";
+                    } else if (asset.endsWith(".css")) {
                         mime = "text/css";
                     } else if (asset.endsWith(".js")) {
                         mime = "application/javascript";
@@ -550,7 +559,7 @@ public class MainActivity extends Activity {
                     throw new IOException("нет доступа к файлу");
                 }
                 BufferedInputStream in = new BufferedInputStream(raw, 65536);
-                // файл офлайн-карты (PMTiles) — не обмен данными, а подложка: копируется к приложению
+                // файл офлайн-карты (PMTiles) — не данные сети: схема уже вшита, такие файлы не нужны
                 in.mark(16);
                 byte[] magic = new byte[7];
                 int got = 0, k;
@@ -559,8 +568,7 @@ public class MainActivity extends Activity {
                 }
                 in.reset();
                 if (got == 7 && "PMTiles".equals(new String(magic, StandardCharsets.US_ASCII))) {
-                    importMap(in, name);
-                    return;
+                    throw new IOException("это файл карты, а не данные сети — карта уже встроена в приложение, его открывать не нужно");
                 }
                 ByteArrayOutputStream out = new ByteArrayOutputStream();
                 byte[] buf = new byte[65536];
@@ -582,131 +590,6 @@ public class MainActivity extends Activity {
             openedError = error;
             runOnUiThread(this::notifyOpened);
         }).start();
-    }
-
-    // ------------------------------------------------------------------ офлайн-карта районов (3.2)
-
-    private volatile boolean mapBusy = false;
-    private volatile boolean mapCancel = false;
-
-    private void mapDone(boolean ok, String msg) {
-        final String m = JSONObject.quote(msg == null ? "" : msg);
-        runOnUiThread(() -> js("window.__kartaMap && window.__kartaMap(" + ok + "," + m + ")"));
-    }
-
-    private void mapProgress(String slug, long done, long total) {
-        final String q = JSONObject.quote(slug);
-        runOnUiThread(() -> js("window.__kartaMapProgress && window.__kartaMapProgress(" + q + "," + done + "," + total + ")"));
-    }
-
-    /** Поток → файл карты в папке карт (через временный файл); ход — странице. */
-    private void storeMap(InputStream in, String slug, long total, long already, File tmp) throws IOException {
-        try (OutputStream out = new FileOutputStream(tmp, already > 0)) {
-            byte[] buf = new byte[1 << 18];
-            int n;
-            long done = already, shown = 0;
-            while ((n = in.read(buf)) > 0) {
-                if (mapCancel) {
-                    throw new IOException("отменено");
-                }
-                out.write(buf, 0, n);
-                done += n;
-                if (done - shown >= 2L << 20) {
-                    shown = done;
-                    mapProgress(slug, done, total);
-                }
-            }
-            out.flush();
-            if (total > 0 && done != total) {
-                throw new IOException("связь оборвалась, скачано не всё — нажмите «Скачать» ещё раз, продолжится с того же места");
-            }
-        }
-        OfflineTiles.validate(tmp);
-        File dst = new File(offline.dir(), slug + ".pmtiles");
-        try {
-            android.system.Os.rename(tmp.getAbsolutePath(), dst.getAbsolutePath());
-        } catch (android.system.ErrnoException e) {
-            throw new IOException("не удалось сохранить карту", e);
-        }
-        offline.scan();
-    }
-
-    /** Файл карты, выбранный на телефоне или открытый из мессенджера. */
-    private void importMap(InputStream in, String name) {
-        if (mapBusy) {
-            mapDone(false, "подождите, идёт загрузка другой карты");
-            return;
-        }
-        mapBusy = true;
-        mapCancel = false;
-        String slug = OfflineTiles.slug(name);
-        File tmp = new File(offline.dir(), slug + ".import");
-        try {
-            tmp.delete();
-            storeMap(in, slug, 0, 0, tmp);
-            mapDone(true, slug);
-        } catch (Exception e) {
-            tmp.delete();
-            mapDone(false, e.getMessage() == null ? e.toString() : e.getMessage());
-        } finally {
-            mapBusy = false;
-        }
-    }
-
-    /** Скачать файл района из интернета; при обрыве следующая попытка продолжает с того же места. */
-    private void downloadMap(String slug, String address) {
-        File tmp = new File(offline.dir(), slug + ".part");
-        HttpURLConnection c = null;
-        try {
-            long have = tmp.isFile() ? tmp.length() : 0;
-            c = (HttpURLConnection) new URL(address).openConnection();
-            c.setConnectTimeout(20000);
-            c.setReadTimeout(30000);
-            c.setInstanceFollowRedirects(true);
-            c.setRequestProperty("User-Agent", "KartaSeti-Android");
-            if (have > 0) {
-                c.setRequestProperty("Range", "bytes=" + have + "-");
-            }
-            int code = c.getResponseCode();
-            if (code == 416) {
-                // временный файл уже целый или испорчен — начать заново
-                tmp.delete();
-                throw new IOException("попробуйте ещё раз");
-            }
-            if (code != 200 && code != 206) {
-                throw new IOException(code == 404 ? "файла этого района пока нет" : "сервер ответил " + code);
-            }
-            if (code == 200) {
-                have = 0;
-            }
-            long len = c.getContentLength() >= 0 ? c.getContentLength() : -1;
-            String cl = c.getHeaderField("Content-Length");
-            if (cl != null) {
-                try {
-                    len = Long.parseLong(cl.trim());
-                } catch (NumberFormatException ignored) {
-                    // размер неизвестен
-                }
-            }
-            long total = len > 0 ? have + len : 0;
-            mapProgress(slug, have, total);
-            try (InputStream in = c.getInputStream()) {
-                storeMap(in, slug, total, have, tmp);
-            }
-            mapDone(true, slug);
-        } catch (Exception e) {
-            if (mapCancel) {
-                tmp.delete();
-                mapDone(false, "отменено");
-            } else {
-                mapDone(false, e.getMessage() == null ? e.toString() : e.getMessage());
-            }
-        } finally {
-            if (c != null) {
-                c.disconnect();
-            }
-            mapBusy = false;
-        }
     }
 
     private void notifyOpened() {
@@ -1128,7 +1011,7 @@ public class MainActivity extends Activity {
             });
         }
 
-        /** Файлы офлайн-карты: JSON [{slug, size, mtime, bounds}]. */
+        /** Вшитая офлайн-схема: JSON [{slug, size, maxzoom, builtin, bounds}] или []. */
         @JavascriptInterface
         public String mapList() {
             return offline.list();
@@ -1141,13 +1024,6 @@ public class MainActivity extends Activity {
             return b == null ? "" : Base64.encodeToString(b, Base64.NO_WRAP);
         }
 
-        /** Плитка загруженных снимков района (JPEG) в base64; пусто — такой плитки нет. */
-        @JavascriptInterface
-        public String satTile(int z, int x, int y) {
-            byte[] b = offline.tile(z, x, y, true);
-            return b == null ? "" : Base64.encodeToString(b, Base64.NO_WRAP);
-        }
-
         /** Файл из набора приложения (шрифты подписей карты) в base64; пусто — файла нет. */
         @JavascriptInterface
         public String asset(String path) {
@@ -1156,17 +1032,17 @@ public class MainActivity extends Activity {
         }
 
         /**
-         * Плитка или шрифт в фоне (3.3.1). Синхронные mapTile/satTile/asset держали страницу, пока Java
+         * Плитка или шрифт в фоне (3.3.1). Синхронные mapTile/asset держали страницу, пока Java
          * читает, распаковывает и кодирует плитку, — при смене вида карты MapLibre просит десятки плиток
          * сразу, и карта замирала. Теперь ответ приходит позже: window.__kartaTile(id, base64).
-         * kind: "t" — схема, "s" — снимки, "f" — файл path из набора приложения.
+         * kind: "t" — схема, "f" — файл path из набора приложения.
          */
         @JavascriptInterface
         public void tileAsync(int id, String kind, int z, int x, int y, String path) {
             FutureTask<Void> task = new FutureTask<>(() -> {
                 String s = "";
                 try {
-                    byte[] b = "f".equals(kind) ? readAsset(path) : offline.tile(z, x, y, "s".equals(kind));
+                    byte[] b = "f".equals(kind) ? readAsset(path) : ("t".equals(kind) ? offline.tile(z, x, y) : null);
                     if (b != null) {
                         s = Base64.encodeToString(b, Base64.NO_WRAP);
                     }
@@ -1195,34 +1071,6 @@ public class MainActivity extends Activity {
             if (f != null) {
                 f.cancel(false);
             }
-        }
-
-        /** Скачать файл района. Ход — __kartaMapProgress(район, скачано, всего), итог — __kartaMap(ok, текст). */
-        @JavascriptInterface
-        public boolean mapDownload(String slug, String address) {
-            if (mapBusy || slug == null || address == null || !address.startsWith("https://")) {
-                return false;
-            }
-            mapBusy = true;
-            mapCancel = false;
-            final String s = OfflineTiles.slug(slug);
-            new Thread(() -> downloadMap(s, address)).start();
-            return true;
-        }
-
-        @JavascriptInterface
-        public void mapCancel() {
-            mapCancel = true;
-        }
-
-        @JavascriptInterface
-        public boolean mapBusy() {
-            return mapBusy;
-        }
-
-        @JavascriptInterface
-        public boolean mapDelete(String slug) {
-            return offline.delete(slug);
         }
 
         /** Строка состояния Android в цвет шапки: светлая тема — белая с тёмными значками, тёмная — тёмная. */

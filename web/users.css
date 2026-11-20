@@ -1,17 +1,21 @@
-#apUsersDialog{box-sizing:border-box;margin:auto;padding:0;width:min(660px,94vw);max-height:86vh;overflow:auto;border:0;border-radius:18px;background:var(--panel,#fff);color:var(--text,#111);box-shadow:0 12px 60px #0004;font:15px/1.45 var(--font,system-ui)}
+#apUsersDialog{box-sizing:border-box;margin:auto;padding:0;width:min(660px,94vw);height:min(640px,86vh);max-height:86vh;overflow:hidden;border:0;border-radius:18px;background:var(--panel,#fff);color:var(--text,#111);box-shadow:0 12px 60px #0004;font:15px/1.45 var(--font,system-ui)}
+#apUsersDialog[open]{display:flex;flex-direction:column}
 #apUsersDialog::backdrop{background:#0005}
+/* размер окна один для всех вкладок: прокручивается только содержимое */
 #apUsersDialog *{box-sizing:border-box}
-#apUsersDialog .us-head{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:20px 22px 14px}
+#apUsersDialog .us-head{flex:none;display:flex;align-items:center;justify-content:space-between;gap:16px;padding:18px 18px 12px 22px}
 #apUsersDialog h2{margin:0;font-size:21px;line-height:1.3}
 #apUsersDialog h3{margin:20px 0 10px;font-size:16px}
 #apUsersDialog button{margin:0;border:0;border-radius:9px;padding:10px 15px;min-height:40px;background:var(--tonal,#eee);color:var(--text,#111);font:inherit;line-height:1.3;cursor:pointer;white-space:normal;overflow-wrap:anywhere}
 #apUsersDialog button:disabled{opacity:.5;cursor:default}
 #apUsersDialog button:focus-visible,#apUsersDialog input:focus-visible,#apUsersDialog select:focus-visible{outline:2px solid var(--accent,#007aff);outline-offset:2px}
-#apUsersDialog .us-close{flex:0 0 36px;width:36px;min-height:36px;padding:0;border-radius:50%;font-size:23px}
-#apUsersDialog .us-tabs{display:flex;gap:5px;margin:0 22px;padding:4px;background:var(--card,#f2f2f7);border-radius:10px}
+#apUsersDialog .us-close{position:relative;flex:0 0 34px;width:34px;height:34px;min-height:34px;padding:0;border-radius:50%;background:var(--tonal,#eee);color:var(--muted,#666);display:inline-flex;align-items:center;justify-content:center;line-height:0}
+#apUsersDialog .us-close::after{content:'';position:absolute;inset:-5px;border-radius:50%}
+#apUsersDialog .us-close svg{display:block;width:14px;height:14px}
+#apUsersDialog .us-tabs{flex:none;display:flex;gap:5px;margin:0 22px;padding:4px;background:var(--card,#f2f2f7);border-radius:10px}
 #apUsersDialog .us-tabs button{flex:1;background:transparent;padding:8px 12px;min-height:36px;color:var(--muted,#666)}
 #apUsersDialog .us-tabs button[aria-selected=true]{background:var(--panel,#fff);color:var(--text,#111);box-shadow:0 1px 4px #0002}
-#apUsersDialog .us-content{padding:4px 22px 22px}
+#apUsersDialog .us-content{flex:1 1 auto;min-height:0;overflow:auto;overscroll-behavior:contain;padding:4px 22px 22px}
 #apUsersDialog .us-muted{color:var(--muted,#666);margin:12px 0}
 #apUsersDialog .us-online{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0 18px}
 #apUsersDialog .us-person{display:inline-flex;align-items:center;gap:7px;background:var(--card,#f2f2f7);border-radius:20px;padding:7px 12px;max-width:100%;overflow-wrap:anywhere}
@@ -35,4 +39,4 @@
 #apUsersDialog .us-actions{display:flex;justify-content:flex-end;gap:10px;padding-top:18px;margin-top:18px;border-top:1px solid var(--line,#ddd)}
 #apUsersDialog .us-error{color:var(--danger,#b42318);margin:12px 0;overflow-wrap:anywhere}
 #apUsersDialog .us-success{color:var(--ok,#238c46);margin:12px 0}
-@media(max-width:540px){#apUsersDialog .us-grid{grid-template-columns:1fr}#apUsersDialog .us-head{padding:18px 16px 12px}#apUsersDialog .us-tabs{margin:0 16px}#apUsersDialog .us-content{padding:4px 16px 18px}#apUsersDialog .us-toolbar{align-items:flex-start}#apUsersDialog .us-toolbar button{max-width:65%}}
+@media(max-width:540px){#apUsersDialog .us-grid{grid-template-columns:1fr}#apUsersDialog{height:min(640px,88vh)}#apUsersDialog .us-head{padding:16px 14px 10px 16px}#apUsersDialog .us-tabs{margin:0 16px}#apUsersDialog .us-content{padding:4px 16px 18px}#apUsersDialog .us-toolbar{align-items:flex-start}#apUsersDialog .us-toolbar button{max-width:65%}}

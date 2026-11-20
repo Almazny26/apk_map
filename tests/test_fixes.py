@@ -139,7 +139,8 @@ class OwnerTest(Base):
         owner = Client(self.base)
         status, data = owner.call('GET', '/api/access')
         self.assertEqual(status, 200)
-        self.assertEqual(owner.call('POST', '/api/map', dict(delete='нет-такой'))[0], 200)
+        self.assertEqual(owner.call('GET', '/api/map')[0], 200)          # список файлов схемы остаётся
+        self.assertEqual(owner.call('POST', '/api/map', dict(delete='нет-такой'))[0], 403)   # 3.5.3: управления районами нет
 
 
 class FilesTest(unittest.TestCase):

@@ -21,7 +21,8 @@ function define(moduleName, _dependencies, moduleFactory) {
     }
 
     // we assume that when an index module is initializing then other modules are loaded already
-    var workerBundleString = 'var sharedModule = {}; (' + modules.shared + ')(sharedModule); (' + modules.worker + ')(sharedModule);'
+    // Карта сети: те же дополнения для старых браузеров (vendor/compat.js) — и в фоновых потоках
+    var workerBundleString = (typeof __kartaCompat === 'function' ? '(' + __kartaCompat + ')();' : '') + 'var sharedModule = {}; (' + modules.shared + ')(sharedModule); (' + modules.worker + ')(sharedModule);'
 
     var sharedModule = {};
     // the order of arguments of a module factory depends on rollup (it decides who is whose dependency)

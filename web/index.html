@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>Карта сети</title>
 <link rel="stylesheet" href="leaflet/leaflet.css" />
+<script src="vendor/compat.js"></script>
 <script src="leaflet/leaflet.js"></script>
 <script src="vendor/leaflet-rotate.js"></script>
 <script>L.Map.mergeOptions({ rotate: true, touchRotate: true, shiftKeyRotate: true, rotateControl: false, pitchDrag: false, bounceAtZoomLimits: false });</script>
@@ -264,11 +265,8 @@ const ORDER = ["ns5ac","nbe5ac","lbe5ac","pbe5ac","pbe5aciso","lbe5aclr","af5x"]
 const INFINET = ["e5st18","e5st23","e5st25","e5st28","q518","q523","q525","q528","r500028","e5ste"];
 
 const map = L.map("map", { zoomControl: true, attributionControl: false }).setView([46.2, 34.6], 8);
-const offlineTiles = L.tileLayer("https://local.tiles/tiles/{z}/{x}/{y}.png", {
-  minZoom: 7, maxZoom: 11, maxNativeZoom: 11,
-  attribution: "&copy; OpenStreetMap",
-  errorTileUrl: "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"
-});
+// 3.5.3: растровой карты 7–11 (web/tiles) больше нет — без связи везде видна вшитая схема (maps.js)
+const offlineTiles = L.layerGroup();
 const esriUrl = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
 const nameUrl = "https://core-renderer-tiles.maps.yandex.net/tiles?l=skl&x={x}&y={y}&z={z}&scale=1&lang=ru_RU&projection=web_mercator";
 const sat = L.tileLayer(esriUrl, { maxZoom: 19, maxNativeZoom: 19 });
@@ -308,7 +306,7 @@ function useMap(kind) {
   document.getElementById("mapHyb").classList.toggle("on", kind === "hyb");
   if (kind === "sat") status("Спутник. Нужен интернет.");
   else if (kind === "hyb") status("Гибрид: снимок и русские названия. Нужен интернет.");
-  else status("Офлайн-карта: Крым, Херсон, Запорожье и Ставрополье, зум 7–11.");
+  else status("Офлайн-карта: схема левого берега Херсонской и Запорожской областей.");
 }
 document.getElementById("mapOff").onclick = () => useMap("off");
 document.getElementById("mapSat").onclick = () => useMap("sat");
@@ -521,9 +519,6 @@ function restoreSession() {
 map.on("click", e => {
   if (fiberMode && armNode) addNode(e.latlng);
   else if (!fiberMode && mode) place(e.latlng);
-});
-map.on("zoomend", () => {
-  if (map.hasLayer(offlineTiles) && map.getZoom() > 11) status("Офлайн-карта до зума 11. Дальше включите онлайн-слой.");
 });
 
 document.getElementById("addA").onclick = () => setMode("A", "addA");
@@ -1228,7 +1223,7 @@ function initFiber() {
   };
 }
 initFiber();
-status("Офлайн-карта и высоты: Крым, Херсон, Запорожье и Ставрополье, зум карты 7–11.");
+status("Офлайн-карта: схема левого берега; высоты: Крым, Херсон, Запорожье и Ставрополье.");
 </script>
 <script src="vendor/maplibre-gl.js"></script>
 <script src="vendor/offline-style.js"></script>

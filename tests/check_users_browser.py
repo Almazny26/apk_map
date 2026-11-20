@@ -39,6 +39,14 @@ with tempfile.TemporaryDirectory() as folder:
             text=dialog.inner_text()
             assert 'Телефон' not in text and 'Компьютер' not in text and '@server' not in text,text
             assert dialog.locator('summary').count()==2
+            # 3.5.1: окно не меняет размер при смене вкладок, крестик — круг со значком SVG
+            boxes=[]
+            for tab in ['Доступ','Копии','Участники']:
+                dialog.get_by_role('tab',name=tab,exact=True).click(); page.wait_for_timeout(150)
+                bb=dialog.bounding_box(); boxes.append((round(bb['width']),round(bb['height'])))
+            assert len(set(boxes))==1,boxes
+            x=dialog.locator('.us-close').bounding_box()
+            assert abs(x['width']-x['height'])<1 and dialog.locator('.us-close svg').count()==1,x
             dialog.get_by_role('tab',name='Доступ',exact=True).click()
             assert dialog.locator('form').count()==0
             dialog.get_by_role('button',name='Добавить пользователя',exact=True).click()

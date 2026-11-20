@@ -18,12 +18,16 @@
   async function open() {
     var d = el('dialog', '', document.body);
     d.id = 'apAccessDialog';
-    d.style.cssText = 'box-sizing:border-box;margin:auto;width:min(520px,92vw);max-height:85vh;overflow:auto;border:0;border-radius:16px;padding:24px;background:var(--panel,#fff);color:var(--text,#111);font:16px system-ui';
-    el('h2', 'Удалённый доступ', d);
-    var content = el('div', 'Загрузка…', d), foot = el('div', '', d);
-    foot.style.marginTop = '18px';
-    var close = el('button', 'Закрыть', foot); close.onclick = function () { d.close(); };
-    close.style.cssText = 'border:0;border-radius:9px;padding:10px 16px;background:var(--tonal,#eee);color:var(--text,#111);font:inherit;cursor:pointer';
+    // вид — как у окна «Пользователи»: шапка с заголовком и круглым крестиком, те же отступы и шрифт
+    d.style.cssText = 'box-sizing:border-box;margin:auto;width:min(520px,92vw);max-height:85vh;overflow:auto;border:0;border-radius:18px;padding:0 22px 22px;background:var(--panel,#fff);color:var(--text,#111);font:15px/1.45 var(--font,system-ui);box-shadow:0 12px 60px #0004';
+    var head = el('div', '', d);
+    head.style.cssText = 'position:sticky;top:0;z-index:1;display:flex;align-items:center;justify-content:space-between;gap:16px;margin:0 -22px 4px;padding:18px 18px 12px 22px;background:inherit';
+    var title = el('h2', 'Удалённый доступ', head); title.style.cssText = 'margin:0;font-size:21px;line-height:1.3';
+    var x = el('button', '', head); x.type = 'button'; x.className = 'ap-x'; x.title = 'Закрыть'; x.setAttribute('aria-label', 'Закрыть');
+    x.innerHTML = '<svg viewBox="0 0 14 14" width="14" height="14" aria-hidden="true"><path d="M3 3l8 8M11 3l-8 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+    x.onclick = function () { d.close(); };
+    var content = el('div', 'Загрузка…', d);
+    var close = x;      // один крестик в шапке, как в «Пользователях»
     function button(text, parent) {
       var b = el('button', text, parent); b.style.cssText = 'display:block;width:100%;margin:12px 0;padding:12px;border:0;border-radius:9px;background:#007aff;color:white;font:inherit;cursor:pointer'; return b;
     }

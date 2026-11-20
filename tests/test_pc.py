@@ -78,7 +78,6 @@ class ServerTest(unittest.TestCase):
         self.assertIn('rel="icon"', html)
         with self.get("/favicon.ico") as r:
             self.assertGreater(len(r.read()), 1000)
-        self.assertIsNone(self.app.tiles.zip)
         for route in ['/tiles/8/159/91.png','/tc/sat/8/159/91','/osat/8/159/91.jpg']:
             with self.assertRaises(urllib.error.HTTPError) as error:
                 self.get(route)
@@ -162,65 +161,28 @@ class OfflineMapTest(unittest.TestCase):
         hdr += bytes([8]) + struct.pack("<ii", 0, 0)
         return bytes(hdr) + root + meta + data
 
-    def test_files_tiles_upload_delete(self):
+    def test_files_tiles(self):
         import gzip
-        import io
         blob = self.tiny({(0, 0, 0): b"world", (15, 19352, 11573): b"house"})
         with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "map"))
+            with open(os.path.join(d, "map", "kherson.pmtiles"), "wb") as f:
+                f.write(blob)
             m = run.OfflineMap(os.path.join(d, "map"), lambda *a: None)
-            slug = m.upload("Мой район (1).pmtiles", io.BytesIO(blob), len(blob))
             st = m.status()
-            self.assertEqual([f["slug"] for f in st["files"]], [slug])
+            self.assertEqual([f["slug"] for f in st["files"]], ["kherson"])
             self.assertEqual(st["files"][0]["bounds"], [33.0, 46.0, 34.0, 47.0])
             data, gz = m.tile(15, 19352, 11573)
             self.assertTrue(gz)
             self.assertEqual(gzip.decompress(data), b"house")
             self.assertIsNone(m.tile(15, 1, 1))
-            invalid = b"PMTiles" + bytes(200)
-            with self.assertRaises(ValueError):
-                m.upload("Мой район (1).pmtiles", io.BytesIO(invalid), len(invalid))
-            self.assertEqual(gzip.decompress(m.tile(15, 19352, 11573)[0]), b"house")
-            with self.assertRaises(ValueError):
-                m.upload("x.pmtiles", io.BytesIO(b"not a map" * 40), 360)
-            self.assertTrue(m.delete(slug))
+            # 3.5.3: скачивания и загрузки районов в программе больше нет — файл кладут в папку map
+            for gone in ("upload", "delete", "start", "build_sat", "_fetch_release"):
+                self.assertFalse(hasattr(m, gone), gone)
+            os.remove(os.path.join(d, "map", "kherson.pmtiles"))
             self.assertEqual(m.status()["files"], [])
             self.assertIsNone(m.tile(0, 0, 0))
-
-
-    @staticmethod
-    def sat_file(folder):
-        """Файл снимков крошечного «района», плитки берутся не из интернета, а подставные."""
-        m = run.OfflineMap(os.path.join(folder, "build"), lambda *a: None)
-        m.REGIONS = {"t": ("Тест", (46.0, 33.0, 46.02, 33.02))}
-        m.SAT_MAXZOOM = 6
-        asked = []
-
-        def get(url, *a, **k):
-            asked.append(url)
-            if "/g/5/" in url:
-                raise urllib.error.HTTPError(url, 404, "нет", None, None)
-            return b"\xff\xd8" + url.rsplit("/g/", 1)[1].encode()
-        m._get = get
-        path = os.path.join(folder, "t-sat.pmtiles")
-        res = m.build_sat(["t"], path)
-        return path, res, asked
-
-    def test_sat_file(self):
-        with tempfile.TemporaryDirectory() as d:
-            path, res, asked = self.sat_file(d)
-            self.assertEqual(len(asked), 7)                      # масштабы 0–6, по одной плитке
-            self.assertEqual(res["tiles"], 6)                    # плитки 5-го масштаба «нет на сервере»
-            m = run.OfflineMap(os.path.join(d, "map"), lambda *a: None)
-            with open(path, "rb") as f:
-                slug = m.upload("t-sat.pmtiles", f, os.path.getsize(path))
-            f = m.status()["files"][0]
-            self.assertEqual((slug, f["kind"]), ("t-sat", "sat"))
-            self.assertIsNone(m.tile(6, 37, 22))                 # снимки — не схема
-            x, y = int((33.01 + 180) / 360 * 64), 22
-            data, gz = m.tile(6, x, y, "sat")
-            self.assertEqual((data, gz), (b"\xff\xd8" + ("6/%d/%d.jpg" % (y, x)).encode(), False))
-            self.assertIsNone(m.tile(5, x >> 1, y >> 1, "sat"))
-            m.delete(slug)
+            m.close()
 
 
 class OfflineHttpTest(unittest.TestCase):
@@ -242,40 +204,31 @@ class OfflineHttpTest(unittest.TestCase):
         cls.app.close()
         cls.tmp.cleanup()
 
-    def test_upload_tile_fonts(self):
+    def test_tile_fonts_and_removed_routes(self):
         blob = OfflineMapTest.tiny({(15, 19352, 11573): b"house"})
-        r = urllib.request.urlopen(urllib.request.Request(self.base + "/api/mapupload?name=kherson.pmtiles", data=blob, method="POST"), timeout=10)
-        self.assertTrue(json.loads(r.read())["ok"])
+        os.makedirs(os.path.join(self.tmp.name, "map"), exist_ok=True)
+        with open(os.path.join(self.tmp.name, "map", "kherson.pmtiles"), "wb") as f:
+            f.write(blob)
         st = json.loads(urllib.request.urlopen(self.base + "/api/map", timeout=10).read())
-        self.assertEqual([f["slug"] for f in st["files"]], ["kherson"])
-        self.assertEqual([g["slug"] for g in st["regions"]], ["kherson", "zaporozhye"])
+        self.assertEqual([(f["slug"], f["kind"]) for f in st["files"]], [("kherson", "map")])
+        self.assertNotIn("job", st)
         r = urllib.request.urlopen(self.base + "/omap/15/19352/11573.mvt", timeout=10)
-        self.assertEqual(r.headers.get("Content-Encoding"), "gzip")
-        self.assertEqual(__import__("gzip").decompress(r.read()), b"house")
+        self.assertIsNone(r.headers.get("Content-Encoding"))   # 3.5.1: без gzip — антивирусы и прокси его портили
+        self.assertEqual(r.read(), b"house")
         self.assertEqual(urllib.request.urlopen(self.base + "/omap/15/1/1.mvt", timeout=10).status, 204)
         # шрифты подписей: есть диапазон — отдаётся, нет — пустой ответ, а не ошибка
         r = urllib.request.urlopen(self.base + "/vendor/fonts/Noto%20Sans%20Regular/1024-1279.pbf", timeout=10)
         self.assertGreater(len(r.read()), 1000)
         r = urllib.request.urlopen(self.base + "/vendor/fonts/Noto%20Sans%20Regular/40000-40255.pbf", timeout=10)
         self.assertEqual((r.status, r.read()), (200, b""))
-        # снимки района: отдельный файл, плитки-картинки по своему адресу
-        with tempfile.TemporaryDirectory() as d:
-            path = OfflineMapTest.sat_file(d)[0]
-            with open(path, "rb") as f:
-                blob = f.read()
-        for name in ['t-sat.pmtiles', 'crimea.pmtiles', 'other.pmtiles', 'zaporozhye.pmtiles']:
+        # 3.5.3: скачивание/загрузка районов, снимки и растровая карта убраны
+        for method, url, body in [("POST", "/api/mapupload?name=x.pmtiles", blob), ("POST", "/api/map", b'{"download":["kherson"]}'),
+                                  ("GET", "/osat/6/37/22.jpg", None), ("GET", "/tiles/8/159/91.png", None), ("GET", "/tc/osm/5/17/11", None)]:
             with self.assertRaises(urllib.error.HTTPError) as error:
-                urllib.request.urlopen(urllib.request.Request(self.base + '/api/mapupload?name='+name,data=blob,method='POST'),timeout=10)
-            self.assertEqual(error.exception.code,400)
+                urllib.request.urlopen(urllib.request.Request(self.base + url, data=body, method=method,
+                                                              headers={"Content-Type": "application/json"}), timeout=10)
+            self.assertEqual(error.exception.code, 404, url)
             error.exception.close()
-        st = json.loads(urllib.request.urlopen(self.base + '/api/map',timeout=10).read())
-        self.assertEqual([(f['slug'],f['kind']) for f in st['files']],[('kherson','map')])
-        with self.assertRaises(urllib.error.HTTPError) as error:
-            urllib.request.urlopen(self.base + '/osat/6/37/22.jpg',timeout=10)
-        self.assertEqual(error.exception.code,404)
-        error.exception.close()
-        with self.assertRaises(urllib.error.HTTPError):
-            urllib.request.urlopen(urllib.request.Request(self.base + "/api/mapupload?name=bad.pmtiles", data=b"x" * 500, method="POST"), timeout=10)
 
 
 if __name__ == "__main__":

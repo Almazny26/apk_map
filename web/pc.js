@@ -4,9 +4,7 @@
  * после Leaflet, до кода приложения. Код приложения при этом не меняется:
  *   - данные приложения (localStorage) хранятся в файле data\state.json на компьютере: при запуске
  *     они загружаются оттуда, при каждом изменении — записываются обратно;
- *   - офлайн-карта https://local.tiles/... и онлайн-карты (схема, спутник, подписи) идут через
- *     программу на компьютере: просмотренное хранится на диске и видно без интернета;
- *   - без галочки «Онлайн» программа в интернет не ходит (как на телефоне);
+ *   - карта — только офлайн-схема из папки map (плитки /omap), в интернет страница не ходит;
  *   - AndroidBridge: рельеф считает программа на компьютере по тому же файлу dem.bin,
  *     PNG профиля сохраняется в «Загрузки».
  */
@@ -15,7 +13,7 @@
 
   window.KartaPC = true;
   window.KartaOfflineOnly = true;
-  var EXPECTED = '3.5.0';   // версия run.py, для которой написана эта страница
+  var EXPECTED = '3.5.3';   // версия run.py, для которой написана эта страница
   window.KartaPCVersion = EXPECTED;
   var OWN = /^(wf_|karta_)/;
 
@@ -214,44 +212,16 @@
 
   // ---------------------------------------------------------------- карты
 
-  // офлайн-карта и онлайн-карты идут через программу на компьютере: она хранит просмотренные
-  // плитки в data\tilecache и показывает их без интернета; в интернет ходит только при «Онлайн»
-  var REWRITE = [
-    [/^https:\/\/local\.tiles\//, '/'],
-    // ?v= — чтобы браузер не показывал плитки, запомненные прежней версией (заглушки Esri)
-    [/^https:\/\/tile\.openstreetmap\.org\/.*/, '/tc/osm/{z}/{x}/{y}?v=' + EXPECTED],
-    [/^https:\/\/server\.arcgisonline\.com\/ArcGIS\/rest\/services\/World_Imagery\/.*/, '/tc/sat/{z}/{x}/{y}?v=' + EXPECTED],
-    [/^https:\/\/core-renderer-tiles\.maps\.yandex\.net\/tiles\?l=skl.*/, '/tc/skl/{z}/{x}/{y}?v=' + EXPECTED]
-  ];
+  // На ПК только офлайн-схема (MapLibre, плитки /omap). Подложки из интернета (остались от телефона:
+  // OpenStreetMap, Esri, подписи Яндекса) не запрашиваются вовсе: пустая картинка вместо плитки.
+  // 3.5.3: кэш онлайн-плиток /tc, растровая карта /tiles и снимки /osat в программе убраны.
   if (window.L && L.tileLayer) {
     var tileLayer = L.tileLayer;
     var BLANK = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
     L.tileLayer = function (url, opts) {
-      var rewritten = false;
-      if (typeof url === 'string') {
-        for (var i = 0; i < REWRITE.length; i++) {
-          if (REWRITE[i][0].test(url)) { url = url.replace(REWRITE[i][0], REWRITE[i][1]); rewritten = true; break; }
-        }
-      }
       var layer = tileLayer.call(this, url, opts);
-      // На ПК только офлайн-схема: старые растровые и онлайн-подложки (осталось от телефона) не
-      // запрашиваются вовсе, иначе каждый сдвиг карты давал десятки ответов 404.
-      if (rewritten && window.KartaOfflineOnly) layer.getTileUrl = function () { return BLANK; };
+      if (typeof url === 'string' && /^https?:\/\//.test(url)) layer.getTileUrl = function () { return BLANK; };
       return layer;
-    };
-    // Браузер грузит с одного адреса не больше 6 плиток сразу. Программа отвечает и по адресам
-    // t1…t4.localhost (это тот же компьютер) — плитки идут вчетверо параллельнее. Сначала проверяем,
-    // что такие адреса работают; до ответа и при ошибке — обычный адрес.
-    var spread = false, port = location.port;
-    window.__kartaTileUrl = function (u, x, y) {
-      return spread && u.charAt(0) === '/' ? 'http://t' + (1 + ((x + y) & 3)) + '.localhost:' + port + u : u;
-    };
-    var probe = new Image();
-    probe.onload = function () { spread = true; };
-    if (!window.KartaSharedMode && !window.KartaOfflineOnly) probe.src = 'http://t1.localhost:' + port + '/icon.png?probe=' + Date.now();
-    var getTileUrl = L.TileLayer.prototype.getTileUrl;
-    L.TileLayer.prototype.getTileUrl = function (coords) {
-      return window.__kartaTileUrl(getTileUrl.call(this, coords), coords.x, coords.y);
     };
   }
 

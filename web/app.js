@@ -47,6 +47,7 @@
   };
   var STATES = { 'работает': '#2e7d32', 'авария': '#c62828', 'работы': '#ef6c00', 'план': '#78909c' };
   var PT_KINDS = ['опора', 'колодец', 'муфта', 'кросс', 'запас', 'точка'];
+  var PT_RANK = { 'кросс': 1, 'муфта': 2, 'запас': 3, 'колодец': 4, 'опора': 5, 'точка': 6 };   // кто остаётся издали
   var PT_COLOR = { 'опора': '#5d4037', 'колодец': '#455a64', 'муфта': '#ef6c00', 'кросс': '#2e7d32', 'запас': '#00838f', 'точка': '#78909c', 'узел': '#1565c0' };
   var LAY = {
     air: { name: 'по опорам', color: '#e8590c', dash: null },
@@ -368,10 +369,11 @@
     '.ap-ctl .grp.north{display:none}body.ap-rot .ap-ctl .grp.north{display:flex}.ap-ctl .grp.north svg{width:26px;height:26px}',
     '.ap-ctl .grp.undo{display:none}body.ap-edit.ap-canundo:not(.ap-tool) .ap-ctl .grp.undo{display:flex}',
     '.ap .srow{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--line);flex-wrap:wrap}',
-    '.ap .srow>span{flex:1 1 150px;font-size:14px}.ap .srow .chips{margin:0;flex:0 1 auto}.ap .srow .chip{min-height:32px;padding:5px 11px;font-size:13px}',
+    '.ap .srow>span{flex:1 1 150px;font-size:14px}.ap .srow .chips{margin:0;flex:0 1 auto}.ap .srow .chip{min-height:40px;padding:6px 12px;font-size:13px}',
     '.ap .srow small{display:block;color:var(--muted);font-size:12px}',
     '.ap .sw{margin-left:auto;width:51px;height:31px;border-radius:16px;background:#e9e9ea;position:relative;flex:0 0 51px;cursor:pointer;border:0;padding:0;transition:background .2s}',
     '.ap .sw::after{content:"";position:absolute;top:2px;left:2px;width:27px;height:27px;border-radius:50%;background:#fff;transition:left .2s;box-shadow:0 2px 4px rgba(0,0,0,.25)}',
+    '.ap .sw::before{content:"";position:absolute;inset:-7px 0}',
     '.ap .sw.on{background:#34c759}.ap .sw.on::after{left:22px}body.dark .ap .sw{background:#39393d}body.dark .ap .sw.on{background:#30d158}',
     '.ap details.hlp{border-bottom:1px solid var(--line)}.ap details.hlp summary{padding:12px 2px;font-weight:600;font-size:15px;cursor:pointer;list-style:none;display:flex;align-items:center}',
     '.ap details.hlp summary::-webkit-details-marker{display:none}.ap details.hlp summary::after{content:"+";margin-left:auto;color:var(--muted);font-size:20px;font-weight:400}',
@@ -383,7 +385,7 @@
     '.ap-logo{display:flex;align-items:center;gap:8px;font-weight:700;font-size:16px;white-space:nowrap}',
     '.ap-seg{display:flex;background:#e3e3e8;border-radius:9px;padding:2px;gap:0}body.dark .ap-seg{background:#2c2c2e}',
     '.ap-seg button{display:flex;align-items:center;gap:6px;border:0;background:transparent;color:var(--muted);border-radius:7px;padding:7px 14px;' +
-      'font:600 14px var(--font);cursor:pointer;white-space:nowrap}',
+      'font:600 14px var(--font);cursor:pointer;white-space:nowrap;min-height:40px}',
     '.ap-seg button{color:var(--text)}.ap-seg button.on{background:#fff;color:var(--text);box-shadow:0 1px 3px rgba(0,0,0,.2)}body.dark .ap-seg button.on{background:#636366;color:#fff}',
     '.ap-seg button.on[data-mode=edit],body.dark .ap-seg button.on[data-mode=edit]{background:var(--accent);color:#fff}',
     '.ap-sp{flex:1}',
@@ -424,6 +426,9 @@
     '.ap .joint-note{display:block;margin:8px 0;white-space:pre-wrap;overflow-wrap:anywhere}.ap .joint-dist{white-space:normal;overflow-wrap:anywhere}',
     '.ap .route-option input[type=radio]{width:auto}',
     '.ap .chips{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0}',
+    '.ap .chips.fib{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:4px;margin:0;flex:1;min-width:0}',
+    '.ap .chips.fib .chip{min-width:0;min-height:40px;justify-content:center;padding:4px 2px;font-variant-numeric:tabular-nums}',
+    '.ap .lrow.fibrow{align-items:flex-start}.ap .lrow.fibrow>.muted{line-height:40px}',
     '.ap .chips.tight{margin:6px 0 0}.ap .chips.scroll{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;padding-right:16px}.ap .chips.scroll::-webkit-scrollbar{display:none}',
     '.ap .lrow{display:flex;align-items:center;gap:10px;margin-top:6px}.ap .lrow>.muted{flex:0 0 58px}.ap .lrow .chips{margin:0}',
     '.ap .row.tool{flex-wrap:nowrap}.ap .row.tool>button{flex:0 0 auto}',
@@ -457,6 +462,8 @@
     '#apSheet{position:fixed;left:0;right:0;bottom:0;z-index:1050;background:var(--panel);color:var(--text);border-radius:14px 14px 0 0;' +
       'box-shadow:0 -6px 26px rgba(0,0,0,.22);max-height:48vh;display:none;flex-direction:column;padding-bottom:env(safe-area-inset-bottom)}',
     '#apSheet.show{display:flex;animation:apUp .18s ease-out}',
+    '@media (orientation:landscape) and (max-height:34em) and (max-width:56.2em){#apSheet{left:8px;right:auto;bottom:8px;width:min(400px,52vw);max-height:calc(100vh - 64px);border-radius:16px;box-shadow:var(--shadow)}' +
+      'body.ap-sheet .leaflet-bottom.leaflet-left{left:calc(min(400px,52vw) + 8px)}}',
     '@keyframes apUp{from{transform:translateY(30px);opacity:.5}to{transform:none;opacity:1}}',
     '.ap-grip{width:36px;height:5px;border-radius:3px;background:#c7c7cc;margin:6px auto 0;flex:0 0 auto}body.dark .ap-grip{background:#5a5a5f}',
     '.ap-head{display:flex;align-items:center;gap:8px;padding:8px 12px 4px 16px;flex:0 0 auto;touch-action:none}',
@@ -466,7 +473,10 @@
     '.ap .ap-quick button.b{flex:1 1 0;min-width:0;min-height:38px;padding:8px 6px;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
     '#apSheet.peek .ap-head{padding-bottom:8px}',
     '.ap-title{font-weight:700;font-size:17px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
-    '.ap-x{width:30px;height:30px;border:0;border-radius:50%;background:var(--tonal);color:var(--muted);font-size:13px;font-weight:700;cursor:pointer}',
+    // крестик «Закрыть» — один на все шторки и окна: ровный круг 34 px, значок SVG по центру, нажимается с запасом до 44 px
+    '.ap-x{position:relative;box-sizing:border-box;flex:0 0 34px;width:34px;height:34px;min-width:34px;margin:0;padding:0;border:0;border-radius:50%;background:var(--tonal);color:var(--muted);' +
+      'display:inline-flex;align-items:center;justify-content:center;line-height:0;cursor:pointer;-webkit-tap-highlight-color:transparent}',
+    '.ap-x::after{content:"";position:absolute;inset:-5px;border-radius:50%}.ap-x svg{display:block;width:14px;height:14px;flex:none}.ap-x:active{filter:brightness(.92)}',
     '#apSheet.ap-measuring .ap-grip{display:none}',
     '.ap-body{overflow-y:auto;padding:0 16px 16px;overscroll-behavior:contain}',
     '@media (min-width:900px){#apSheet{left:12px;right:auto;top:68px;bottom:12px;width:var(--pw);max-height:none;border-radius:16px;box-shadow:var(--shadow)}' +
@@ -477,9 +487,9 @@
     '#apDlg.show{display:flex}',
     '#apDlgBox{background:var(--panel);color:var(--text);width:min(520px,calc(100vw - 24px));max-height:88vh;overflow:auto;border-radius:14px;padding:18px;box-sizing:border-box;box-shadow:0 10px 40px rgba(0,0,0,.3)}',
     // шапка окна: заголовок слева, крестик справа на одной линии с ним; при прокрутке остаётся на месте
-    '.ap-dhead{position:sticky;top:-18px;z-index:3;margin:-18px -18px 8px;padding:14px 18px 8px;min-height:30px;background:var(--panel);display:flex;align-items:center;gap:12px;border-radius:14px 14px 0 0}',
+    '.ap-dhead{position:sticky;top:-18px;z-index:3;margin:-18px -18px 8px;padding:14px 18px 8px;min-height:34px;background:var(--panel);display:flex;align-items:center;gap:12px;border-radius:14px 14px 0 0}',
     '.ap-dhead .ap-grip{position:absolute;left:50%;top:6px;margin:0 0 0 -18px;display:none}#apDlg.lock .ap-dx{display:none}',
-    '.ap-dhead h3{flex:1 1 auto;min-width:0;margin:0!important}.ap-dx{flex:0 0 30px;margin-left:auto;padding:0;display:flex;align-items:center;justify-content:center}',
+    '.ap-dhead h3{flex:1 1 auto;min-width:0;margin:0!important}.ap-dx{margin-left:auto}',
     '@media (max-width:899px){.ap-dhead{padding-top:20px;border-radius:20px 20px 0 0}.ap-dhead .ap-grip{display:block}}',
     '#apDlgBox h3{margin:0 0 6px;font-size:18px}',
     '@media (max-width:899px){#apDlg{align-items:flex-end}#apDlgBox{width:100%;border-radius:20px 20px 0 0;max-height:92vh;padding-bottom:calc(18px + env(safe-area-inset-bottom))}}',
@@ -488,9 +498,13 @@
     '#apMenu.show{display:block}',
     '#apMenu hr{border:0;border-top:1px solid var(--line);margin:4px 8px}',
     // всплывающее сообщение
-    '#apToast{position:fixed;left:50%;bottom:calc(var(--sheet-h,0px) + 18px);transform:translateX(-50%);text-align:center;z-index:3000;background:#3a3a3c;color:#fff;border-radius:14px;padding:10px 16px;' +
-      'font:14px var(--font);max-width:calc(100vw - 32px);box-shadow:0 6px 20px rgba(0,0,0,.3);opacity:0;pointer-events:none;transition:opacity .2s}',
+    '#apToast{position:fixed;left:calc(50% + var(--panel-w,0px) / 2);bottom:calc(var(--sheet-h,0px) + 18px);transform:translateX(-50%);text-align:center;z-index:3000;background:#3a3a3c;color:#fff;border-radius:14px;padding:10px 16px;' +
+      'font:14px var(--font);width:max-content;max-width:calc(100vw - var(--panel-w,0px) - 32px);box-sizing:border-box;box-shadow:0 6px 20px rgba(0,0,0,.3);opacity:0;pointer-events:none;transition:opacity .2s}',
     '#apToast.show{opacity:1}',
+    // окно открыто — сообщение над ним, в затемнённой полосе сверху, а не на заголовке окна
+    'body.ap-dlgon #apToast{bottom:auto;top:calc(env(safe-area-inset-top,0px) + 10px)}',
+    // телефон боком: окно почти во всю высоту — сообщение в узкой полосе над ним, а не на заголовке
+    '@media (orientation:landscape) and (max-height:34em){body.ap-dlgon #apToast{top:calc(env(safe-area-inset-top,0px) + 6px);padding:7px 14px;max-width:min(560px,80vw);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}#apDlg{padding-top:46px;box-sizing:border-box}#apDlgBox{max-height:calc(100vh - 52px)}}',
     // перекрестие
     '#apCross{position:fixed;z-index:1040;width:0;height:0;pointer-events:none;display:none}',
     '#apCross.show{display:block}',
@@ -513,7 +527,7 @@
     '.ap-fab svg{width:28px;height:28px}',
     '#mapKinds{top:66px!important;right:10px!important;gap:0!important;flex-direction:row!important;background:var(--panel);border-radius:12px;box-shadow:var(--shadow);padding:3px}',
     '#mapKinds button{background:transparent!important;color:var(--text)!important;border:0!important;box-shadow:none!important;border-radius:9px!important;' +
-      'padding:6px 10px!important;font:600 13px var(--font)!important;min-height:32px}',
+      'padding:6px 10px!important;font:600 13px var(--font)!important;min-height:40px}',
     '#mapKinds button.on{background:var(--tonal)!important;color:var(--accent)!important}',
     '.leaflet-control-scale-line{border-color:var(--muted)!important;background:var(--panel)!important;color:var(--text)!important}',
     'body.dark #apToast{background:#48484a;color:#fff}',
@@ -560,6 +574,7 @@
   // ================================================================== значки (SVG)
 
   function ic(d, w) { return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="' + (w || 2) + '" stroke-linecap="round" stroke-linejoin="round">' + d + '</svg>'; }
+  var XSVG = '<svg viewBox="0 0 14 14" width="14" height="14" aria-hidden="true"><path d="M3 3l8 8M11 3l-8 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
   var I = {
     eye: ic('<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>'),
     pen: ic('<path d="M4 20h4L19 9l-4-4L4 16v4zM13.5 6.5l4 4"/>'),
@@ -573,7 +588,6 @@
     file: ic('<path d="M7 4v13M3 13l4 4 4-4M17 20V7M13 11l4-4 4 4"/>'),
     list: ic('<path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/>', 2.2),
     web: ic('<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.5 2.6 2.5 14.4 0 17M12 3.5c-2.5 2.6-2.5 14.4 0 17"/>'),
-    moon: ic('<path d="M19.5 14.5A8 8 0 0 1 9.5 4.5a8 8 0 1 0 10 10z"/>'),
     user: ic('<circle cx="12" cy="8" r="4"/><path d="M4 20c1.5-4 4.5-5.5 8-5.5s6.5 1.5 8 5.5"/>'),
     node: ic('<circle cx="12" cy="12" r="6"/>'),
     fiber: ic('<path d="M3 18l6-6 4 4 8-9"/><circle cx="3" cy="18" r="1.5" fill="currentColor"/><circle cx="21" cy="7" r="1.5" fill="currentColor"/>'),
@@ -604,7 +618,7 @@
   bar.id = 'apBar';
   document.body.appendChild(bar);
 
-  var sheet = el('div', 'ap', '<div class="ap-grip"></div><div class="ap-head"><div class="ap-tt"><div class="ap-title"></div><div class="ap-sub"></div></div><button type="button" class="ap-x" title="Закрыть">&#10005;</button></div><div class="ap-quick"></div><div class="ap-body"></div>');
+  var sheet = el('div', 'ap', '<div class="ap-grip"></div><div class="ap-head"><div class="ap-tt"><div class="ap-title"></div><div class="ap-sub"></div></div><button type="button" class="ap-x" title="Закрыть" aria-label="Закрыть">' + XSVG + '</button></div><div class="ap-quick"></div><div class="ap-body"></div>');
   sheet.id = 'apSheet';
   document.body.appendChild(sheet);
   var sheetTitle = sheet.querySelector('.ap-title'), sheetSub = sheet.querySelector('.ap-sub'), sheetQuick = sheet.querySelector('.ap-quick'), sheetBody = sheet.querySelector('.ap-body');
@@ -678,6 +692,8 @@
 
   var view = null;   // что показано: {k: 'card'|'pt'|'line'|'nodemenu'|'tool'|'add'|'search', ...}
   function wide() { return window.innerWidth >= 900; }
+  /* телефон боком: шторка — колонкой слева, иначе она закрывает почти всю невысокую карту */
+  function side() { return wide() || (window.innerWidth > window.innerHeight && window.innerHeight <= 544); }
   /* На телефоне у карточки два положения: «свёрнута» (только название и строка сведений — карта
    * видна почти вся) и «развёрнута». Сведения об объекте открываются свёрнутыми; смахивание вниз
    * сворачивает, ещё раз — прячет карточку, но выделение и правка остаются (заказчик: «чтобы
@@ -733,11 +749,12 @@
     if (view && (view.k === 'card' || view.k === 'pt' || view.k === 'line' || view.k === 'nodemenu')) select(null);
     closeSheet();
   };
-  function sheetH() { return sheet.classList.contains('show') && !wide() ? sheet.getBoundingClientRect().height : 0; }
-  function panelW() { return sheet.classList.contains('show') && wide() ? sheet.getBoundingClientRect().right : 0; }
+  function sheetH() { return sheet.classList.contains('show') && !side() ? sheet.getBoundingClientRect().height : 0; }
+  function panelW() { return sheet.classList.contains('show') && side() ? sheet.getBoundingClientRect().right : 0; }
   function sizeChanged() {
     document.body.classList.toggle('ap-sheet', sheet.classList.contains('show'));
     document.body.style.setProperty('--sheet-h', sheetH() + 'px');
+    document.body.style.setProperty('--panel-w', Math.round(panelW()) + 'px');
     placeCross();
   }
   if (window.ResizeObserver) new ResizeObserver(sizeChanged).observe(sheet);
@@ -770,13 +787,12 @@
   // ================================================================== диалоги
 
   var dlgLock = false;      // окно нельзя закрыть, не ответив (имя при первом запуске)
-  function openDlg(html) { dlgBox.removeAttribute('data-offline'); dlgBox.removeAttribute('data-set'); dlgLock = false; dlg.classList.remove('lock'); dlgBox.style.transform = ''; dlgBox.scrollTop = 0;
-    dlgBox.innerHTML = '<div class="ap-dhead"><div class="ap-grip"></div><button type="button" class="ap-x ap-dx" title="Закрыть">' +
-      '<svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M2 2l8 8M10 2l-8 8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button></div>' + html;
+  function openDlg(html) { document.body.classList.add('ap-dlgon'); clearTimeout(toastT); toastEl.classList.remove('show'); dlgBox.removeAttribute('data-set'); dlgLock = false; dlg.classList.remove('lock'); dlgBox.style.transform = ''; dlgBox.scrollTop = 0;
+    dlgBox.innerHTML = '<div class="ap-dhead"><div class="ap-grip"></div><button type="button" class="ap-x ap-dx" title="Закрыть" aria-label="Закрыть">' + XSVG + '</button></div>' + html;
     var head = dlgBox.firstChild, h3 = head.nextElementSibling;
     if (h3 && h3.tagName === 'H3') head.insertBefore(h3, head.lastChild);       // заголовок — в шапку, рядом с крестиком
     dlgBox.querySelector('.ap-dx').onclick = function () { if (!dlgLock) closeDlg(); }; dlg.classList.add('show'); return dlgBox; }
-  function closeDlg() { dlg.classList.remove('show'); dlgBox.innerHTML = ''; dlgBox.removeAttribute('data-offline'); dlgBox.removeAttribute('data-set'); }
+  function closeDlg() { document.body.classList.remove('ap-dlgon'); dlg.classList.remove('show'); dlgBox.innerHTML = ''; dlgBox.removeAttribute('data-set'); }
   dlg.addEventListener('click', function (e) { if (e.target === dlg && !dlgLock) closeDlg(); });
   // телефон: окно можно смахнуть вниз (когда его содержимое прокручено к началу)
   (function () {
@@ -921,7 +937,8 @@
   /* с какого масштаба видна точка линии: муфты и кроссы — раньше опор и колодцев */
   function ptShown(kind, z) {
     var base = S.linePts === 'always' ? 12 : S.linePts === 'never' ? 99 : 14;
-    return z >= (kind === 'муфта' || kind === 'кросс' || kind === 'запас' ? base - 2 : base);
+    // муфты, кроссы и запасы видны раньше прочих точек; «по масштабу» — с 13-го (3.5.3: на 12-м их тысячи)
+    return z >= (kind === 'муфта' || kind === 'кросс' || kind === 'запас' ? (S.linePts === 'always' ? base - 2 : base - 1) : base);
   }
 
   // --------------------------------------------------------------- что видно на экране (после движения)
@@ -931,11 +948,28 @@
   function drawPoints() {
     var keep = {};
     var z = map.getZoom(), b = view2(), lblZ = S.ptLbl === 'always' ? 14 : S.ptLbl === 'never' ? 99 : 16, n = 0, f = zf(z);
+    /* Издали (масштаб 14 и мельче) из значков, легших в одну клетку экрана, рисуется один — самый
+     * важный (кросс, муфта, запас…). Иначе на большой сети на 12-м масштабе ~5 000 муфт рисовались
+     * поверх друг друга, и каждый сдвиг или смена масштаба замирали на секунду. */
+    var cand = [], cell = z < 15 ? Math.max(12, Math.round(22 * S.ptSize * f)) : 0, taken = {};
     alive().forEach(function (o) {
       if (o.type !== 'fiber') return;
       if (sel && sel.type === 'line' && sel.id === o.id && mode === 'edit' && !tool) return;      // у выделенной линии — ручки
       ptsOf(o).forEach(function (p, i) {
-        if (p.nid || n > 12000 || !ptShown(p.kind, z) || !b.contains([p.lat, p.lng])) return;
+        if (p.nid || !ptShown(p.kind, z) || !b.contains([p.lat, p.lng])) return;
+        cand.push([o, p, i, PT_RANK[p.kind] || 9]);
+      });
+    });
+    if (cell) cand.sort(function (a, c) { return a[3] - c[3]; });
+    cand.forEach(function (c) {
+      var o = c[0], p = c[1], i = c[2];
+      if (n > 12000) return;
+      if (cell) {
+        var px = map.project([p.lat, p.lng], z), ck = Math.floor(px.x / cell) + ':' + Math.floor(px.y / cell);
+        if (taken[ck]) return;
+        taken[ck] = 1;
+      }
+      (function () {
         n++;
         var key = o.id + ':' + i, st = PT_SHAPE[p.kind] || PT_SHAPE['точка'], r = Math.max(3, (PT_PX[p.kind] || 12) / 2.6 * S.ptSize * f);
         var sig = p.lat + ',' + p.lng + ',' + p.kind + ',' + r + ',' + (z >= lblZ ? p.name || '' : '');
@@ -946,7 +980,7 @@
         if (p.name && z >= lblZ) l = L.marker([p.lat, p.lng], { interactive: false, keyboard: false, icon: L.divIcon({ className: '', html: '<div class="ap-plbl">' + esc(p.name) + '</div>', iconSize: [0, 0], iconAnchor: [0, -r] }) }).addTo(ptsLayer);
         pointMarkers[key] = { m: m, l: l, sig: sig };
         keep[key] = true;
-      });
+      })();
     });
     Object.keys(pointMarkers).forEach(function (key) {
       if (!keep[key]) { var o = pointMarkers[key]; ptsLayer.removeLayer(o.m); if (o.l) ptsLayer.removeLayer(o.l); delete pointMarkers[key]; }
@@ -962,6 +996,20 @@
       if (isSel || b.contains([o.f.lat, o.f.lng])) vis.push(o);
     });
     var dom = vis.length <= (pc ? 600 : 300), f = zf(z);
+    if (!dom && z < 13) {
+      // издали узлы, легшие точно друг на друга, рисуются одним значком (важные — первыми)
+      var BIGK = { 'опорный узел': 1, 'базовая станция': 1, 'коммутатор': 1 }, taken = {}, cell = Math.max(10, Math.round((z < 11 ? 18 : 14) * S.nodeSize * f));
+      vis.sort(function (a, c) {
+        var ra = sel && sel.id === a.id ? 0 : BIGK[a.f.kind] ? 1 : 2, rc = sel && sel.id === c.id ? 0 : BIGK[c.f.kind] ? 1 : 2;
+        return ra - rc;
+      });
+      vis = vis.filter(function (o) {
+        if (sel && sel.type === 'node' && sel.id === o.id) return true;
+        var px = map.project([o.f.lat, o.f.lng], z), ck = Math.floor(px.x / cell) + ':' + Math.floor(px.y / cell);
+        if (taken[ck]) return false;
+        taken[ck] = 1; return true;
+      });
+    }
     vis.forEach(function (o) {
       var isSel = sel && sel.type === 'node' && sel.id === o.id, asDom = dom || isSel;
       var sig = [o.t, o.f.lat, o.f.lng, o.f.name, o.f.kind, o.f.state, asDom ? 'd' : 'c', isSel ? 's' : '', mode, tool ? 't' : '', S.nodeSize, f, gen].join('|');
@@ -1031,20 +1079,47 @@
   // --------------------------------------------------------------- линии (перерисовка только изменённых)
 
   var drawn = {};
+  /* Издали (масштаб 12 и мельче) линия — одна полоса цвета основной прокладки, без белой подложки и
+   * без деления на участки: на экране они всё равно сливаются, а слоёв холста меньше в 5–6 раз.
+   * Иначе на большой сети (5 000 линий) каждое окончание сдвига карты пересчитывало ~30 000 слоёв —
+   * отсюда рывок на 12-м масштабе. */
+  var FAR_Z = 12, farNow = null;
+  function farZoom() { return map.getZoom() <= FAR_Z; }
+  map.on('zoomend', function () { if (farNow !== null && farNow !== farZoom()) refresh(); });
+  /* Вблизи у линии белая подложка и участки — слоёв в 5–6 раз больше. При переходе на 13-й масштаб
+   * большой сети (тысячи линий) подробно перерисовываются только линии на экране; остальные — когда
+   * до них дойдёт карта (после сдвига). Иначе первый кадр 13-го масштаба замирал на секунду. */
+  var LAZY_MIN = 800, lazyLeft = 0;
+  map.on('moveend', function () { if (lazyLeft) refresh(); });
+  function lineOnScreen(o, b) {
+    var pts = ptsOf(o);
+    if (!pts.length) return false;
+    var s0 = pts[0].lat, n0 = s0, w0 = pts[0].lng, e0 = w0;
+    for (var i = 1; i < pts.length; i++) { var p = pts[i]; if (p.lat < s0) s0 = p.lat; else if (p.lat > n0) n0 = p.lat; if (p.lng < w0) w0 = p.lng; else if (p.lng > e0) e0 = p.lng; }
+    return b.intersects(L.latLngBounds([s0, w0], [n0, e0]));
+  }
   function refresh() {
     index = null;
-    var z = map.getZoom(), seen = {}, redrew = false;
+    var z = map.getZoom(), seen = {}, redrew = false, far = farNow = farZoom(), todo = [];
     alive().forEach(function (o) {
       if (o.type === 'node') return;
       seen[o.id] = true;
       var isSel = sel && sel.type === 'line' && sel.id === o.id, editSel = isSel && mode === 'edit' && !tool;
-      var flags = [o.t, isSel ? 's' : '', editSel ? 'e' : '', pc && mode === 'view' ? 'v' : '', S.lineW, gen].join('|'), d = drawn[o.id];
+      var flags = [o.t, isSel ? 's' : '', editSel ? 'e' : '', pc && mode === 'view' ? 'v' : '', S.lineW, gen, far && !isSel ? 'f' : ''].join('|'), d = drawn[o.id];
       if (d && d.ref === o && d.flags === flags) return;
-      if (d) d.layers.forEach(function (l) { layer.removeLayer(l); });
-      drawn[o.id] = { ref: o, flags: flags, layers: drawLine(o, z) };
-      redrew = true;
+      todo.push([o, flags, isSel]);
     });
     Object.keys(drawn).forEach(function (id) { if (!seen[id]) { drawn[id].layers.forEach(function (l) { layer.removeLayer(l); }); delete drawn[id]; } });
+    // только вид линии издали/вблизи сменился у многих сразу — откладываем те, что не на экране
+    var lazy = !far && todo.length >= LAZY_MIN, b = lazy ? map.getBounds().pad(0.5) : null;
+    lazyLeft = 0;
+    todo.forEach(function (t) {
+      var o = t[0], d = drawn[o.id];
+      if (lazy && d && d.ref === o && !t[2] && !lineOnScreen(o, b)) { lazyLeft++; return; }
+      if (d) d.layers.forEach(function (l) { layer.removeLayer(l); });
+      drawn[o.id] = { ref: o, flags: t[1], layers: drawLine(o, z, far && !t[2]) };
+      redrew = true;
+    });
     decor();
     if (redrew) {   // новые линии легли на холст поверх значков — значки снова наверх
       Object.keys(pointMarkers).forEach(function (k) { pointMarkers[k].m.bringToFront(); });
@@ -1054,13 +1129,25 @@
     if (view && (view.k === 'card' || view.k === 'pt' || view.k === 'line' || view.k === 'nodemenu' || view.k === 'tool')) renderView();
   }
 
-  function drawLine(o, z) {
+  function drawLine(o, z, far) {
     var pts = ptsOf(o), out = [];
     if (pts.length < 2) return out;
     function add(l) { l.addTo(layer); out.push(l); return l; }
     var isSel = sel && sel.type === 'line' && sel.id === o.id, editSel = isSel && mode === 'edit' && !tool, w = S.lineW;
     var tip = pc && mode === 'view' ? esc(o.f.name || '') + ' · ' + len(lenOf(pts)) + (o.f.fibers ? ' · ' + esc(String(o.f.fibers)) + ' ж' : '') : null;
     var ll = pts.map(function (p) { return [p.lat, p.lng]; });
+    if (far) {
+      var fs;
+      if (o.type === 'radio') fs = { color: '#1565c0', dash: '9 7' };
+      else {
+        var cnt = {}, best = 'air';
+        layOf(o).forEach(function (k) { cnt[k] = (cnt[k] || 0) + 1; if (cnt[k] > (cnt[best] || 0)) best = k; });
+        fs = LAY[best] || LAY.air;
+      }
+      var fl = add(L.polyline(ll, { renderer: canvas, color: fs.color, weight: 3.5 * w, dashArray: fs.dash, lineCap: fs.dash ? 'butt' : 'round', lineJoin: 'round', bubblingMouseEvents: true }));
+      if (tip) fl.bindTooltip(tip, { sticky: true });
+      return out;
+    }
     if (isSel) add(L.polyline(ll, { renderer: canvas, color: '#1a73e8', weight: 18 * w, opacity: .3, interactive: false }));
     if (o.type === 'radio') {
       add(L.polyline(ll, { renderer: canvas, color: '#0b2545', weight: (isSel ? 10 : 8) * w, opacity: .35, interactive: false }));
@@ -1976,15 +2063,16 @@
     html = '<div class="muted">Точек: <b>' + t.pts.length + '</b> · ' + len(lenOf(t.pts)) +
       (t.pts.length ? '' : ' · двигайте карту — точка встаёт в перекрестие, или нажмите на место') + '</div>';
     if (t.type === 'fiber') {
-      html += '<div class="chips tight scroll fib" title="Число жил кабеля"><span class="muted">Жил:</span>' + FIBERS.map(function (k) {
+      // число жил — ровная сетка 5 × 2 (3.5.3), а не прокручиваемая строка
+      html += '<div class="lrow fibrow" title="Число жил кабеля"><span class="muted">Жил</span><div class="chips fib">' + FIBERS.map(function (k) {
           return '<button type="button" class="chip' + (String(t.fibers) === k ? ' on' : '') + '" data-fib="' + k + '">' + k + '</button>';
-        }).join('') + '</div>';
+        }).join('') + '</div></div>';
       html += layChips(t.nextLay, 'next') +
         '<div class="chips tight scroll">' + PT_KINDS.map(function (k) {
           return '<button type="button" class="chip' + (t.nextKind === k ? ' on' : '') + '" data-k="' + k + '">' + ptSvg(k, 16) + k + '</button>';
         }).join('') + '</div>';
     }
-    html += '<div class="row tool"><button type="button" class="b t" data-a="undo" title="Убрать последнюю точку">' + I.undo.replace('<svg', '<svg width="20" height="20"') + '</button>' +
+    html += '<div class="row tool"><button type="button" class="b t" data-a="undo" title="Убрать последнюю точку" aria-label="Убрать последнюю точку" style="flex:0 0 48px;min-width:48px">' + I.undo.replace('<svg', '<svg width="20" height="20"') + '</button>' +
       '<button type="button" class="b" id="apAddPt" style="flex:1">Поставить точку</button>' +
       '<button type="button" class="b t" data-a="done">Готово</button></div>';
     if (t.type === 'fiber') html += layExtra(t.nextLay, 'next');
@@ -2126,16 +2214,12 @@
 
   // ================================================================== настройки (меню «⋮»)
 
-  function sw(on) { return '<span class="sw' + (on ? ' on' : '') + '"></span>'; }
   function renderMenu() {
-    var dark = document.body.classList.contains('dark');
     menu.innerHTML =
       '<button type="button" class="mi" data-m="file">' + I.file + 'Обмен данными (файл)</button>' +
       '<button type="button" class="mi" data-m="journal">' + I.list + 'Журнал изменений</button>' +
-      (pc ? '' : '<button type="button" class="mi" data-m="offline">' + I.map + 'Карта без интернета</button>') +
       '<button type="button" class="mi" data-m="legend">' + I.node + 'Обозначения</button>' +
       '<button type="button" class="mi" data-m="help">' + I.help + 'Инструкция</button>' +
-      '<hr><button type="button" class="mi" data-m="theme">' + I.moon + 'Тёмная тема' + sw(dark) + '</button>' +
       '<hr><button type="button" class="mi" data-m="set">' + I.gear + 'Настройки</button>';
   }
   function closeMenu() { menu.classList.remove('show'); }
@@ -2151,8 +2235,6 @@
     var m = b.getAttribute('data-m');
     if (m === 'file') { closeMenu(); showExchange(); }
     else if (m === 'journal') { closeMenu(); showJournal(); }
-    else if (m === 'offline' && !pc) { closeMenu(); showOffline(); }
-    else if (m === 'theme') { setS('theme', document.body.classList.contains('dark') ? 'light' : 'dark'); renderMenu(); menu.classList.add('show'); }
     else if (m === 'legend') { closeMenu(); showLegend(); }
     else if (m === 'help') { closeMenu(); showHelp(); }
     else if (m === 'set') { closeMenu(); showSettings(); }
@@ -2201,133 +2283,6 @@
     $('apNo').onclick = closeDlg;
   }
 
-
-  // ================================================================== карта без интернета
-
-  var REGIONS = [{ slug: 'kherson', name: 'Херсонская область', mb: 102, sat: 141 }, { slug: 'zaporozhye', name: 'Запорожская область', mb: 104, sat: 124 },
-    { slug: 'crimea', name: 'Крым', mb: 77, sat: 104 }];
-  var MAPS_URL = 'https://github.com/Almazny26/apk_map/releases/download/maps/';
-  var mapJob = null, mapPoll = 0;      // телефон: ход скачивания {state, slug, done, total, error}
-  function mb(n) { return Math.round((n || 0) / 1048576) + ' МБ'; }
-  function offlineOpen() { return dlg.classList.contains('show') && dlgBox.getAttribute('data-offline'); }
-  function showOffline() {
-    var mapOwner = !shared || !shared.isOwner || shared.isOwner();   // в совместном режиме файлы карты меняет только серверный компьютер
-    if (pc) return;
-    if (pc) fetch('/api/map').then(function (r) { return r.json(); }).then(function (st) { renderOffline(st.files || [], st.job); }, function () { renderOffline([], null); });
-    else renderOffline(window.KartaMap ? window.KartaMap.info().files : [], mapJob);
-  }
-  var mapQueue = [];       // телефон: что ещё скачать после текущего файла
-  function renderOffline(files, job) {
-    if (pc) files = files.filter(function (f) { return f.kind !== 'sat'; });
-    var by = {}, KM = window.KartaMap, run = job && job.state === 'running' ? job : null, top = offlineOpen() ? dlgBox.scrollTop : 0;
-    files.forEach(function (f) { by[f.slug] = f; });
-    var html = '<h3>Карта без интернета</h3><p class="muted">' + (pc ? 'Подробная схема работает из готовых файлов. Доступ к интернету для просмотра не нужен.' : 'Скачайте район — и в нём без интернета рисуются сразу: схема на любом масштабе до отдельных домов и снимки со спутника.') + '</p>';
-    if (KM && !KM.info().gl) html += '<p style="color:var(--danger)">Это устройство не умеет быстро рисовать карту (нет WebGL) — офлайн-схема показана не будет.</p>';
-    function bar() {
-      var pct = run.total ? Math.floor(run.done * 100 / run.total) : 0, sat = /-sat$/.test(run.slug);
-      return '<div style="flex:1 1 100%"><div style="height:8px;border-radius:4px;background:var(--line);overflow:hidden">' +
-        '<div style="height:100%;width:' + pct + '%;background:var(--accent)"></div></div><small>' + (sat ? 'снимки: ' : 'схема: ') +
-        (run.total ? (run.total > 100000 ? mb(run.done) + ' из ' + mb(run.total) : run.done + ' из ' + run.total) + ' (' + pct + '%)' : esc(run.stage || 'подключаюсь…')) + '</small></div>';
-    }
-    function row(g) {
-      var f = by[g.slug], fs = by[g.slug + '-sat'], busy = run && (run.slug === g.slug || run.slug === g.slug + '-sat');
-      var combined = pc && files.some(function (x) { return x.slug === 'karta-offline' && g.slug !== 'crimea'; });
-      var st = pc ? (f ? 'схема ' + mb(f.size) : combined ? 'схема установлена' : 'около ' + g.mb + ' МБ') : f ? 'схема ' + mb(f.size) + (fs ? ', снимки ' + mb(fs.size) : ', снимков нет') : fs ? 'только снимки ' + mb(fs.size) : 'около ' + (g.mb + g.sat) + ' МБ: схема и снимки';
-      var r = '<div class="srow"><span>' + esc(g.name) + '<small>' + st + '</small></span>';
-      if (busy) r += '<button type="button" class="b t" data-a="cancel">Отмена</button>' + bar();
-      else {
-        if (!mapOwner) return r + '</div>';
-        if (pc ? !f && !combined : !f || !fs) r += '<button type="button" class="b" data-dl="' + (pc ? g.slug : f ? g.slug + '-sat' : fs ? g.slug : g.slug + ',' + g.slug + '-sat') + '"' + (run ? ' disabled' : '') + '>' +
-          (f ? 'Скачать снимки' : fs ? 'Скачать схему' : 'Скачать') + '</button>';
-        if (f || fs) r += '<button type="button" class="b d" data-del="' + [f && g.slug, fs && g.slug + '-sat'].filter(Boolean).join(',') + '">Удалить</button>';
-      }
-      return r + '</div>';
-    }
-    html += '<div class="sec">Районы — из интернета</div>' + REGIONS.map(row).join('');
-    var other = files.filter(function (f) { return f.builtin || !REGIONS.some(function (g) { return g.slug === f.slug || g.slug + '-sat' === f.slug; }); });
-    if (other.length) html += '<div class="sec">Другие файлы карт</div>' + other.map(function (f) {
-      if (f.builtin) return '<div class="srow"><span>Схема левого берега Днепра<small>встроена в приложение, ' + mb(f.size) + ', работает без интернета</small></span></div>';
-      return '<div class="srow"><span>' + esc(f.name && f.name !== f.slug ? f.name : f.slug) + '<small>' + (f.kind === 'sat' ? 'снимки' : 'схема') + ', ' + mb(f.size) + '</small></span>' +
-        (mapOwner ? '<button type="button" class="b d" data-del="' + esc(f.slug) + '">Удалить</button>' : '') + '</div>';
-    }).join('');
-    if (job && job.state === 'error') html += '<p style="color:var(--danger)">Не скачалось: ' + esc(job.error || '') + '</p>';
-    html += (pc ? '' : '<p class="muted">Снимки района — съёмка Sentinel-2, 10 м на точку: видны поля, лесополосы, реки, дороги, кварталы. Более подробные снимки (отдельные дома, опоры) подгружаются из интернета сами и остаются на устройстве там, где вы их уже смотрели. Целую область в таком качестве скачать нельзя: это десятки гигабайт, и владельцы этих снимков массовое скачивание запрещают.</p>') +
-      (mapOwner ? '<div class="sec">Файл карты — с этого устройства</div><p class="muted">Файл района (.pmtiles), присланный с другого телефона или компьютера.</p>' +
-      btnRow([['pick', 'Выбрать файл…', 't']]) : '<p class="muted">Файлы карты устанавливаются и удаляются только на серверном компьютере.</p>') +
-      '<div class="row"><button type="button" class="b t" id="apNo">Закрыть</button></div>';
-    openDlg(html);
-    dlgBox.setAttribute('data-offline', '1');
-    dlgBox.scrollTop = top;
-    $('apNo').onclick = function () { closeDlg(); };
-    function post(body) { return fetch('/api/map', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); }
-    dlgBox.querySelectorAll('[data-dl]').forEach(function (b) {
-      b.onclick = function () {
-        var list = b.getAttribute('data-dl').split(',');
-        if (pc) post({ download: list }).then(function () { pollMap(); });
-        else if (android && android.mapDownload) {
-          mapQueue = list.slice(1);
-          if (android.mapDownload(list[0], MAPS_URL + list[0] + '.pmtiles')) { mapJob = { state: 'running', slug: list[0], done: 0, total: 0 }; showOffline(); }
-          else { mapQueue = []; toast('Подождите: уже идёт другая загрузка'); }
-        } else toast('Скачивание работает в приложении на телефоне и в программе на компьютере');
-      };
-    });
-    dlgBox.querySelectorAll('[data-del]').forEach(function (b) {
-      b.onclick = function () {
-        var list = b.getAttribute('data-del').split(',');
-        confirmDlg('Удалить эту офлайн-карту?', 'Удалить', function () {
-          if (pc) Promise.all(list.map(function (x) { return post({ delete: x }); })).then(function () { if (KM) KM.reload(function () { showOffline(); }); else showOffline(); });
-          else { list.forEach(function (x) { if (android && android.mapDelete) android.mapDelete(x); }); if (KM) KM.reload(function () { showOffline(); }); }
-          toast('Офлайн-карта удалена');
-        });
-      };
-    });
-    bind(dlgBox, {
-      cancel: function () { mapQueue = []; if (pc) post({ cancel: true }); else if (android && android.mapCancel) android.mapCancel(); toast('Отменяю…'); },
-      pick: function () { if (android && android.openFile) android.openFile(); else if (pc) mapPicker.click(); }
-    });
-    clearTimeout(mapPoll);
-    if (pc && run) mapPoll = setTimeout(pollMap, 1200);
-  }
-  var wasRunning = false;
-  function pollMap() {
-    fetch('/api/map').then(function (r) { return r.json(); }).then(function (st) {
-      var running = st.job && st.job.state === 'running';
-      if (wasRunning && !running) {
-        if (window.KartaMap) window.KartaMap.reload();
-        if (st.job.state === 'done') toast('Офлайн-карта скачана');
-      }
-      wasRunning = running;
-      if (offlineOpen()) renderOffline(st.files || [], st.job);
-      else if (running) mapPoll = setTimeout(pollMap, 3000);
-    });
-  }
-  // компьютер: файл карты с диска уходит в программу
-  var mapPicker = el('input');
-  mapPicker.type = 'file'; mapPicker.accept = '.pmtiles'; mapPicker.style.display = 'none';
-  document.body.appendChild(mapPicker);
-  mapPicker.addEventListener('change', function () {
-    var f = mapPicker.files && mapPicker.files[0];
-    mapPicker.value = '';
-    if (!f) return;
-    toast('Копирую файл карты (' + mb(f.size) + ')…');
-    fetch('/api/mapupload?name=' + encodeURIComponent(f.name), { method: 'POST', body: f }).then(function (r) { return r.json(); }).then(function (r) {
-      if (r.error) { toast('Карта не загружена: ' + r.error); return; }
-      if (window.KartaMap) window.KartaMap.reload(function () { toast('Офлайн-карта загружена'); if (offlineOpen()) showOffline(); });
-    }, function () { toast('Карта не загружена'); });
-  });
-  // телефон: ход и итог скачивания или копирования файла карты
-  window.__kartaMapProgress = function (slug, done, total) {
-    mapJob = { state: 'running', slug: slug, done: done, total: total };
-    if (offlineOpen()) showOffline(); else if (!total) toast('Копирую карту: ' + mb(done) + '…');
-  };
-  window.__kartaMap = function (ok, msg) {
-    var next = ok ? mapQueue.shift() : null;
-    if (!ok) mapQueue = [];
-    if (next && android && android.mapDownload && android.mapDownload(next, MAPS_URL + next + '.pmtiles')) mapJob = { state: 'running', slug: next, done: 0, total: 0 };
-    else { next = null; mapJob = ok || msg === 'отменено' ? null : { state: 'error', error: msg }; }
-    if (window.KartaMap) window.KartaMap.reload(function () { if (offlineOpen()) showOffline(); });
-    if (!next) toast(ok ? 'Офлайн-карта загружена' : msg === 'отменено' ? 'Загрузка отменена' : 'Карта не загружена: ' + msg);
-  };
 
   // ================================================================== обмен файлами
 
@@ -2628,7 +2583,60 @@
       if (view && view.k === 'card') renderView();
     },
     mapChanged: function () { gen++; refresh(); },
+    webglHelp: showWebglHelp,
+    setTheme: function (t) { setS('theme', t); },   // для проверок; в меню тема — в «Настройках»
+    mapCheck: showMapCheck,
     addCross: function () { if ($('apAddPt')) $('apAddPt').click(); }, state: function () { return { mode: mode, tool: tool, sel: sel, view: view }; } };
+
+  /* «Проверка карты»: что видит программа (WebGL, плитки, ошибки MapLibre) — текст можно скопировать и
+   * прислать; там же — упрощённая схема без WebGL и сброс сохранённого вида карты. */
+  function showMapCheck() {
+    var KM = window.KartaMap;
+    if (!KM || !KM.diag) return;
+    var inf = KM.info(), simple = KM.simpleOn && KM.simpleOn();
+    openDlg('<h3>Проверка карты</h3><p class="muted">Собираю сведения…</p>');
+    KM.diag().then(function (text) {
+      var html = '<h3>Проверка карты</h3>' +
+        (!inf.gl && !simple ? '<p>Браузер не даёт WebGL — схема показана упрощённо. <a href="#" data-a="howto">Как включить WebGL</a></p>' : '') +
+        (inf.stuck ? '<p style="color:var(--danger)">Схема не загрузилась. Пришлите этот текст тому, кто настраивал программу.</p>' : '') +
+        '<pre id="apDiag" style="white-space:pre-wrap;word-break:break-word;font:12px/1.4 ui-monospace,Consolas,monospace;background:var(--tonal);padding:10px;border-radius:10px;user-select:text;max-height:40vh;overflow:auto">' + esc(text) + '</pre>' +
+        '<div class="row"><button type="button" class="b t" data-a="copy">Скопировать</button>' +
+        '<button type="button" class="b t" data-a="simple">' + (simple ? 'Обычная схема (WebGL)' : 'Упрощённая схема') + '</button></div>' +
+        '<div class="row"><button type="button" class="b t" data-a="resetview">Сбросить вид карты</button><button type="button" class="b" id="apNo">Закрыть</button></div>' +
+        '<p class="muted">«Упрощённая схема» рисуется без WebGL: медленнее и без рельефа, но работает на любом компьютере. «Сбросить вид» возвращает карту к левому берегу и перезагружает страницу; отметки сети не меняются.</p>';
+      openDlg(html);
+      $('apNo').onclick = closeDlg;
+      bind(dlgBox, {
+        copy: function () {
+          var t = $('apDiag').textContent;
+          (navigator.clipboard && navigator.clipboard.writeText ? navigator.clipboard.writeText(t) : Promise.reject()).then(function () { toast('Скопировано'); }, function () {
+            var r = document.createRange(); r.selectNodeContents($('apDiag')); var sl = getSelection(); sl.removeAllRanges(); sl.addRange(r); toast('Выделено — нажмите Ctrl+C');
+          });
+        },
+        simple: function () { KM.simple(!simple); },
+        resetview: function () { ['karta_view', 'karta_map', 'karta_maps_v'].forEach(function (k) { try { localStorage.removeItem(k); } catch (e) { /* нет */ } }); location.reload(); },
+        howto: function (e) { if (e) e.preventDefault(); showWebglHelp(true); }
+      });
+    });
+  }
+
+  /* Нет WebGL: что это значит и как включить (вместо молча пустой карты) */
+  function showWebglHelp(simple) {
+    var head = simple ? 'Браузер не даёт программе WebGL (ускоренную графику), поэтому схема нарисована упрощённо: без рельефа и части подробностей. Отметки сети работают как обычно.'
+      : 'Браузер не даёт программе WebGL (ускоренную графику), поэтому подробная схема не рисуется. Отметки сети работают как обычно.';
+    var steps = pc ? [
+      '<b>Firefox.</b> Наберите в адресной строке <code>about:config</code>, нажмите «Принять риск и продолжить». Найдите и поставьте: <code>webgl.disabled</code> — <b>false</b>; <code>webgl.force-enabled</code> — <b>true</b>. Если видеокарта старая или драйвер не ставится — ещё <code>gfx.webrender.software</code> — <b>true</b>. Перезапустите Firefox.',
+      '<b>Firefox, настройки:</b> «Основные» → «Производительность» → включите «Использовать аппаратное ускорение, если доступно».',
+      '<b>Или откройте программу в Chrome или Edge</b> — адрес тот же: <code>' + esc(location.origin) + '</code>. В Chrome/Edge проверьте «Настройки» → «Система» → «Использовать аппаратное ускорение».',
+      'Проверить, есть ли WebGL: откройте <code>https://get.webgl.org/webgl2/</code> — должен вращаться куб.'
+    ] : [
+      'Обновите в Google Play «Android System WebView» и «Chrome», затем перезапустите приложение.',
+      'Если не помогло: «Настройки» → «Для разработчиков» → «Реализация WebView» — выберите Chrome.'
+    ];
+    openDlg('<h3>Схема без WebGL</h3><p class="muted">' + esc(head) + '</p>' + steps.map(function (t) { return '<p>' + t + '</p>'; }).join('') +
+      '<div class="row"><button type="button" class="b t" id="apNo">Понятно</button></div>');
+    $('apNo').onclick = closeDlg;
+  }
 
   // ================================================================== настройки (окно)
 
@@ -2648,7 +2656,7 @@
     { k: 'ptLbl', t: 'Номера и имена точек', o: [['always', 'Всегда'], ['near', 'Вблизи'], ['never', 'Нет']] },
     { k: 'scale', t: 'Масштабная линейка' },
     { k: 'zoomBtns', t: 'Кнопки масштаба «+ −»', phone: true },
-    { k: 'schema', t: 'Схема там, где есть офлайн-карта', o: [['auto', 'Офлайн-карта'], ['online', 'Из интернета']], h: 'офлайн-карта рисуется сразу и не тратит интернет' },
+    { k: 'schema', t: 'Схема на левом берегу', o: [['auto', 'Встроенная'], ['online', 'Из интернета']], h: 'встроенная схема рисуется сразу и не тратит интернет' },
     { k: 'rot', t: 'Вращение карты', h: pc ? 'Shift + колесо мыши; кнопка-компас возвращает север наверх' : 'двумя пальцами; кнопка-компас возвращает север наверх' },
     { sec: 'Работа' },
     { k: 'start', t: 'При запуске открывать', o: [['view', 'Просмотр'], ['edit', 'Правку'], ['last', 'Как в прошлый раз']] },
@@ -2706,8 +2714,9 @@
     });
     html += '<div class="sec">Прочее</div><div class="srow"><span>Подпись изменений<small>' + esc(localStorage.getItem(WHO) || 'не задана') + '</small></span>' +
       '<button type="button" class="b t" data-a="who">Изменить</button></div>' +
+      '<div class="srow"><span>Схема не видна или с ошибками<small>WebGL, плитки, ошибки карты; упрощённая схема</small></span><button type="button" class="b t" data-a="mapcheck">Проверка карты</button></div>' +
       '<div class="row"><button type="button" class="b d" data-a="reset">Сбросить настройки</button><button type="button" class="b" id="apNo">Готово</button></div>' +
-      '<p class="muted">Карта сети ' + (window.KartaPCVersion || '3.3') + '. Настройки хранятся на этом устройстве и в файл обмена не попадают.<br>' + esc((window.KartaMap && window.KartaMap.credits) || '') + '</p>';
+      '<p class="muted">Карта сети ' + (window.KartaPCVersion || '3.5.3') + '. Настройки хранятся на этом устройстве и в файл обмена не попадают.<br>' + esc((window.KartaMap && window.KartaMap.credits) || '') + '</p>';
     openDlg(html);
     dlgBox.setAttribute('data-set', '1');
     dlgBox.scrollTop = top;
@@ -2721,6 +2730,7 @@
     });
     bind(dlgBox, {
       who: function () { askWho(showSettings); },
+      mapcheck: function () { showMapCheck(); },
       reset: function () { Object.keys(DEF).forEach(function (k) { S[k] = DEF[k]; }); S.theme = 'light'; setS('ui', 1); showSettings(); toast('Настройки сброшены'); }
     });
   }
@@ -2743,7 +2753,7 @@
       ['Карточка сведений', pc ? 'Сведения открываются в панели слева. Esc закрывает её.' : 'Сведения открываются внизу свёрнутыми. Нажмите на них, чтобы развернуть; смахните вниз, чтобы свернуть или убрать — выделение при этом остаётся.'],
       ['Поделиться картой', '«⋮» → «Обмен данными» → «' + (pc ? 'Сохранить в файл' : 'Поделиться файлом') + '». Файл называется вашим именем с датой и временем.'],
       ['Загрузить чужую карту', '«⋮» → «Обмен данными» → «Открыть файл…»' + (pc ? '' : ' (или нажмите на файл в мессенджере → «Открыть с помощью» → «Карта сети»)') + '. Программа покажет отличия и спросит: «Добавить новое» — к вашей карте добавится то, чего у вас нет, ничего не удалится; «Заменить всю карту» — станет точно как в файле. Прежнюю карту можно вернуть там же.'],
-      [pc ? 'Подложка карты' : 'Карта без интернета', pc ? 'Подробная схема Херсонской и Запорожской областей уже установлена и открывается без интернета. Для переноса сохраните папку программы вместе с map и data. Подложка ограничена этими двумя областями. Номера домов отображаются, если они есть в исходных данных; на крупном масштабе показываются все доступные номера.' : '«⋮» → «Карта без интернета»: скачайте нужный район (Херсонская, Запорожская области, Крым) или выберите файл карты с устройства. Внутри района без связи рисуются схема (до отдельных домов) и снимки со спутника (Sentinel-2, 10 м на точку); в «Гибриде» поверх снимков — дороги и подписи. Более подробные снимки подгружаются из интернета сами, когда он есть, и остаются там, где вы их уже открывали.'],
+      [pc ? 'Подложка карты' : 'Карта без интернета', (pc ? 'Подробная схема левого берега Днепра (Херсонская и Запорожская области) лежит в папке map и открывается без интернета. Для переноса сохраните папку программы вместе с map и data.' : 'Подробная схема левого берега Днепра (Херсонская и Запорожская области) встроена в приложение: она работает без интернета, ничего скачивать не нужно. «Спутник» и «Гибрид» берут снимки из интернета; без связи их кнопки серые и показана схема.') + ' Вне этой области — карта из интернета. Номера домов показаны там, где они есть в исходных данных.'],
       ['Вращение карты', pc ? 'Shift + колесо мыши поворачивает карту. Кнопка-компас справа возвращает север наверх.' : 'Поверните карту двумя пальцами. Кнопка-компас справа возвращает север наверх. Вращение можно выключить в настройках.'],
       ['Настройки', '«⋮» → «Настройки»: тема, размер кнопок и текста, подписи, значки, толщина линий, перекрестие и нажатия, координаты и другое.']
     ];

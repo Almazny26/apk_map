@@ -150,6 +150,31 @@ def write_snapshot(folder, state, reason):
     return name
 
 
+def dedupe_backups(folder, items):
+    """Одинаковые по содержимому копии — одной строкой (самая новая). Первая копия часа и первая копия
+    дня делаются в одну минуту из одного и того же файла; снимок перед правкой тоже может совпасть
+    с плановой копией. Сравниваются только файлы одного размера, их содержимое — по SHA-256."""
+    sizes = {}
+    for b in items:
+        sizes[b['size']] = sizes.get(b['size'], 0) + 1
+    seen, out = set(), []
+    for b in items:
+        if sizes[b['size']] > 1:
+            h = hashlib.sha256()
+            try:
+                with open(os.path.join(folder, b['name']), 'rb') as f:
+                    for chunk in iter(lambda: f.read(1 << 20), b''):
+                        h.update(chunk)
+            except OSError:
+                continue
+            key = (b['size'], h.hexdigest())
+            if key in seen:
+                continue
+            seen.add(key)
+        out.append(b)
+    return out
+
+
 class Shared:
     def __init__(self, state, folder):
         self.state = state
@@ -483,8 +508,8 @@ class Shared:
                 continue
             out.append(dict(name=n, size=st.st_size, mtime=int(st.st_mtime * 1000),
                             kind='снимок перед массовой правкой' if n.startswith('snapshot-') else 'плановая копия'))
-        out.sort(key=lambda b: b['mtime'], reverse=True)
-        return out[:200]
+        out.sort(key=lambda b: (b['mtime'], b['name']), reverse=True)
+        return dedupe_backups(folder, out)[:200]
 
     def restore(self, user, name):
         if user['role'] != 'admin':

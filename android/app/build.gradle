@@ -2,10 +2,10 @@ plugins {
     id 'com.android.application'
 }
 
-// Номер версии передаёт сборка GitHub Actions: -Pvc=<350000 + номер сборки> -Pvn=3.5.0.<номер сборки>
+// Номер версии передаёт сборка GitHub Actions: -Pvc=<353000 + номер сборки> -Pvn=3.5.3.<номер сборки>
 // (код больше прежних 2.0.N, поэтому 3.5 ставится поверх них)
-def vc = (project.findProperty('vc') ?: '350000') as int
-def vn = (project.findProperty('vn') ?: '3.5.0') as String
+def vc = (project.findProperty('vc') ?: '353000') as int
+def vn = (project.findProperty('vn') ?: '3.5.3') as String
 
 // Офлайн-схема (левый берег, ~160 МБ) вшивается в APK. В git её нет (ограничение GitHub 100 МБ):
 // сборка берёт файл -PmapFile=… или ../../map/karta-offline.pmtiles (так же лежит у ПК-версии),
@@ -62,7 +62,7 @@ android {
     }
 
     androidResources {
-        // Архив нужен только ПК; Android использует распакованные tiles/.
+        // архивы (*.zip) в APK не кладутся; растровых плиток web/tiles с 3.5.3 нет
         ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:CVS:thumbs.db:picasa.ini:*~:*.zip'
         // карта лежит в APK как есть: читается по смещению (AssetFileDescriptor), без распаковки в память
         noCompress 'pmtiles'

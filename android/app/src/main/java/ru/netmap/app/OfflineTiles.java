@@ -6,23 +6,19 @@ import org.json.JSONObject;
 import java.io.ByteArrayInputStream;
 import java.io.Closeable;
 import java.io.ByteArrayOutputStream;
-import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.RandomAccessFile;
 import java.nio.channels.FileChannel;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
-import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.zip.GZIPInputStream;
 
 /**
- * Офлайн-карта районов: файлы PMTiles v3 (векторные плитки OpenStreetMap, сборка Protomaps) в папке
- * files/maps. По номеру плитки отдаёт её байты — страница (MapLibre GL) рисует карту сама.
+ * Вшитая офлайн-схема: файл PMTiles v3 (векторные плитки OpenStreetMap, сборка Protomaps) в assets APK
+ * без сжатия. По номеру плитки отдаёт её байты — страница (MapLibre GL) рисует карту сама.
+ * Скачивание районов и файлы карт с устройства убраны в 3.5.1: схема левобережья уже внутри приложения.
  *
  * Формат: заголовок 127 байт, корневой каталог, листовые каталоги, данные плиток. Каталог —
  * записи (номер плитки по кривой Гильберта, длина серии, смещение, размер), сжатые gzip.
@@ -37,19 +33,15 @@ final class OfflineTiles {
     }
 
     private static final class Pm {
-        File file;
         String slug;
         long size;
-        long mtime;
-        boolean builtin;     // вшита в приложение (assets, без сжатия), удалить нельзя
         Closeable owner;
         FileChannel ch;
-        long base;           // начало файла внутри APK (для вшитой карты), иначе 0
+        long base;           // начало файла внутри APK
         long leafOff;
         long dataOff;
         int internal;
         int tileComp;
-        int tileType;       // 1 — векторные плитки (схема), иначе картинки (снимки)
         int minZoom;
         int maxZoom;
         double w;
@@ -100,94 +92,29 @@ final class OfflineTiles {
         }
     }
 
-    private final File dir;
-    private List<Pm> files = new ArrayList<>();
-    private Pm embedded;
+    private final Pm embedded;
 
-    OfflineTiles(File dir) {
-        this(dir, null);
-    }
-
-    /** embedded — вшитая в APK схема (assets/maps/*.pmtiles без сжатия); null — нет. */
-    OfflineTiles(File dir, android.content.res.AssetFileDescriptor embedded) {
-        this.dir = dir;
+    /** embedded — вшитая в APK схема (assets/maps/*.pmtiles без сжатия); null — сборка без карты. */
+    OfflineTiles(android.content.res.AssetFileDescriptor embedded) {
+        Pm p = null;
         if (embedded != null) {
             try {
                 java.io.FileInputStream in = embedded.createInputStream();
-                Pm p = new Pm();
+                p = new Pm();
                 p.slug = "karta-offline";
-                p.builtin = true;
                 p.size = embedded.getLength();
                 p.ch = in.getChannel();
                 p.base = embedded.getStartOffset();
                 p.owner = embedded;
                 header(p);
-                this.embedded = p;
             } catch (IOException | RuntimeException e) {
-                this.embedded = null;
+                if (p != null && p.owner != null) {
+                    p.close();
+                }
+                p = null;
             }
         }
-        //noinspection ResultOfMethodCallIgnored
-        dir.mkdirs();
-        scan();
-    }
-
-    File dir() {
-        return dir;
-    }
-
-    /** Перечитать папку: открыть новые и изменённые файлы, закрыть удалённые. */
-    synchronized void scan() {
-        List<Pm> next = new ArrayList<>();
-        File[] list = dir.listFiles();
-        if (list != null) {
-            Arrays.sort(list);
-            for (File f : list) {
-                if (!f.isFile() || !f.getName().endsWith(".pmtiles")) {
-                    continue;
-                }
-                Pm old = null;
-                for (Pm p : files) {
-                    if (p.file.equals(f) && p.size == f.length() && p.mtime == f.lastModified()) {
-                        old = p;
-                    }
-                }
-                if (old != null) {
-                    next.add(old);
-                    continue;
-                }
-                try {
-                    next.add(open(f));
-                } catch (Exception ignored) {
-                    // испорченный файл пропускаем
-                }
-            }
-        }
-        for (Pm p : files) {
-            if (!next.contains(p)) {
-                p.close();
-            }
-        }
-        files = next;
-    }
-
-    private static Pm open(File f) throws IOException {
-        Pm p = new Pm();
-        p.file = f;
-        p.slug = f.getName().substring(0, f.getName().length() - ".pmtiles".length());
-        p.size = f.length();
-        p.mtime = f.lastModified();
-        RandomAccessFile raf = new RandomAccessFile(f, "r");
-        p.owner = raf;
-        p.ch = raf.getChannel();
-        p.base = 0;
-        try {
-            header(p);
-            return p;
-        } catch (IOException | RuntimeException e) {
-            p.close();
-            throw new IOException("повреждённый файл PMTiles", e);
-        }
+        this.embedded = p;
     }
 
     private static void header(Pm p) throws IOException {
@@ -206,7 +133,7 @@ final class OfflineTiles {
             p.dataOff = b.getLong(56);
             p.internal = h[97];
             p.tileComp = h[98];
-            p.tileType = h[99];
+            if (h[99] != 1) throw new IOException("не векторная схема");
             p.minZoom = h[100];
             p.maxZoom = h[101];
             p.w = b.getInt(102) / 1e7;
@@ -216,10 +143,6 @@ final class OfflineTiles {
             p.root = parse(p.read(rootOff, (int) rootLen), p.internal);
             if (p.root.ids.length == 0) throw new IOException("пустой каталог PMTiles");
         }
-    }
-
-    static void validate(File file) throws IOException {
-        open(file).close();
     }
 
     private static byte[] gunzip(byte[] data) throws IOException {
@@ -315,103 +238,52 @@ final class OfflineTiles {
         return acc;
     }
 
-    /** Плитка схемы (распакованная) из первого файла, где она есть; null — нет. */
+    /** Плитка схемы (распакованная); null — нет. */
     byte[] tile(int z, int x, int y) {
-        return tile(z, x, y, false);
-    }
-
-    /** Плитка: sat — снимки (картинка), иначе схема. */
-    byte[] tile(int z, int x, int y, boolean sat) {
-        List<Pm> list;
-        synchronized (this) {
-            list = files;
-            if (embedded != null && !sat) {      // схема — сначала вшитая (под неё написан стиль страницы)
-                list = new ArrayList<>(list);
-                list.add(0, embedded);
-            }
-        }
-        if (z < 0 || z > 24) {
+        Pm p = embedded;
+        if (p == null || z < p.minZoom || z > p.maxZoom || z < 0 || z > 24) {
             return null;
         }
         long id = tileId(z, x, y);
-        for (Pm p : list) {
-            if ((p.tileType == 1) == sat || z < p.minZoom || z > p.maxZoom) {
-                continue;
-            }
-            try {
-                Dir d = p.root;
-                for (int depth = 0; depth < 4; depth++) {
-                    int i = find(d, id);
-                    if (i < 0) {
-                        break;
-                    }
-                    if (d.runs[i] > 0) {
-                        byte[] data = p.read(p.dataOff + d.offs[i], (int) d.lens[i]);
-                        return p.tileComp == 2 ? gunzip(data) : data;
-                    }
-                    d = p.leaf(d.offs[i], (int) d.lens[i]);
+        try {
+            Dir d = p.root;
+            for (int depth = 0; depth < 4; depth++) {
+                int i = find(d, id);
+                if (i < 0) {
+                    break;
                 }
-            } catch (Exception ignored) {
-                // файл заменяют или он испорчен — смотрим следующий
+                if (d.runs[i] > 0) {
+                    byte[] data = p.read(p.dataOff + d.offs[i], (int) d.lens[i]);
+                    return p.tileComp == 2 ? gunzip(data) : data;
+                }
+                d = p.leaf(d.offs[i], (int) d.lens[i]);
             }
+        } catch (Exception ignored) {
+            // испорченная плитка — пустое место
         }
         return null;
     }
 
-    /** Список файлов для страницы: [{slug, size, mtime, bounds: [запад, юг, восток, север]}]. */
-    synchronized String list() {
+    /** Список для страницы: [{slug, size, kind, maxzoom, builtin, bounds: [запад, юг, восток, север]}]. */
+    String list() {
         JSONArray a = new JSONArray();
+        Pm p = embedded;
+        if (p == null) {
+            return a.toString();
+        }
         try {
-            List<Pm> all = new ArrayList<>();
-            if (embedded != null) {
-                all.add(embedded);
-            }
-            all.addAll(files);
-            for (Pm p : all) {
-                JSONObject o = new JSONObject();
-                o.put("slug", p.slug);
-                o.put("size", p.size);
-                o.put("mtime", p.mtime);
-                o.put("kind", p.tileType == 1 ? "map" : "sat");
-                o.put("maxzoom", p.maxZoom);
-                if (p.builtin) {
-                    o.put("builtin", true);
-                }
-                o.put("bounds", new JSONArray(new double[]{p.w, p.s, p.e, p.n}));
-                a.put(o);
-            }
+            JSONObject o = new JSONObject();
+            o.put("slug", p.slug);
+            o.put("size", p.size);
+            o.put("mtime", 0);
+            o.put("kind", "map");
+            o.put("maxzoom", p.maxZoom);
+            o.put("builtin", true);
+            o.put("bounds", new JSONArray(new double[]{p.w, p.s, p.e, p.n}));
+            a.put(o);
         } catch (Exception ignored) {
             // пустой список
         }
         return a.toString();
-    }
-
-    synchronized boolean delete(String slug) {
-        boolean ok = false;
-        for (Pm p : files) {
-            if (p.slug.equals(slug) && !p.builtin) {
-                p.close();
-                ok = p.file.delete();
-            }
-        }
-        scan();
-        return ok;
-    }
-
-    /** Имя файла карты из произвольного имени: буквы, цифры, «_», «-», «.». */
-    static String slug(String name) {
-        String s = name == null ? "" : name;
-        int slash = Math.max(s.lastIndexOf('/'), s.lastIndexOf('\\'));
-        if (slash >= 0) {
-            s = s.substring(slash + 1);
-        }
-        if (s.toLowerCase().endsWith(".pmtiles")) {
-            s = s.substring(0, s.length() - 8);
-        }
-        s = s.replaceAll("[^0-9A-Za-zА-Яа-яЁё_.-]+", "_").replaceAll("^[._]+|[._]+$", "");
-        if (s.isEmpty()) {
-            s = "karta";
-        }
-        return s.length() > 60 ? s.substring(0, 60) : s;
     }
 }

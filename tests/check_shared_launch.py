@@ -55,7 +55,7 @@ with tempfile.TemporaryDirectory() as folder:
         with client.open(base+'/', timeout=5) as r:
             assert b'window.KartaSharedMode=true' in r.read()
         with client.open(base+'/api/info', timeout=5) as r:
-            assert json.load(r)['version'] == '3.5.0'
+            assert json.load(r)['version'] == '3.5.3'
         with client.open(base+'/api/shared', timeout=5) as r:
             snapshot = json.load(r)
             assert snapshot['net']['objs'] == {}

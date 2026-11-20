@@ -19,7 +19,6 @@ from playwright.sync_api import sync_playwright
 with tempfile.TemporaryDirectory() as folder:
     app = run.App(folder, lambda *args: None)
     app.shared = Shared(app.state, folder)
-    app.tilecache.get = lambda *args: None
     for login, role in [('admin','admin'), ('ivan','editor'), ('petr','editor'), ('watch','viewer')]:
         app.shared.set_user(dict(login=login, name=login, role=role, password='test-password'))
     server = run.Server(('127.0.0.1', 0), run.make_handler(app))

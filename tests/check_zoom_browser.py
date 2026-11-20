@@ -9,7 +9,6 @@ from playwright.sync_api import sync_playwright
 with tempfile.TemporaryDirectory(dir=ROOT/'.audit') as tmp:
  os.environ['KARTA_MAP_DIR']=str(ROOT/'map')
  app=run.App(tmp,lambda *a:None)
- app.tilecache.get=lambda *a:None
  objs={}
  for i in range(20):
   lat=46.5+(i%5)*.002; lng=33.5+(i//5)*.003
@@ -55,6 +54,6 @@ with tempfile.TemporaryDirectory(dir=ROOT/'.audit') as tmp:
    browser.close()
  finally:
   server.shutdown();server.server_close()
-  if app.tiles.zip:app.tiles.zip.close()
+  pass
   for f in app.offline.files.values():f.close()
 
